@@ -1,0 +1,1044 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Coach Companion</title>
+<!-- PWA (ADR-012). Inert on file:// — the desktop test build still opens by double-click. -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<meta name="theme-color" content="#1E3A5F">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Coach">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+/* ============================================================================================
+   Design tokens — centralised on purpose (late refactors are cheap when these stay here).
+   ============================================================================================ */
+:root{
+  --bg:#F5F3EE; --card:#FFFFFF; --ink:#1E2430; --sub:#6B7280; --line:#E5E1D8;
+  --accent:#1E3A5F; --good:#2E7D46; --warn:#B58500; --bad:#B3402A;
+  --radius:12px; --pad:14px; --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 var(--font);
+     -webkit-text-size-adjust:100%;padding-bottom:70px}
+header{position:sticky;top:0;z-index:5;background:var(--accent);color:#fff;
+       padding:calc(10px + env(safe-area-inset-top)) 16px 10px}
+header b{font-size:17px}
+header .sub{font-size:12px;opacity:.75}
+main{max-width:680px;margin:0 auto;padding:14px}
+h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--sub);margin:20px 4px 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+      padding:var(--pad);margin-bottom:10px}
+.card.dim{opacity:.55}
+.row{display:flex;align-items:center;gap:10px}
+.grow{flex:1;min-width:0}
+.chip{display:inline-block;padding:2px 9px;border-radius:999px;color:#fff;font-size:12px;
+      font-weight:600;white-space:nowrap}
+.tiny{font-size:12px;color:var(--sub)}
+.big{font-size:15px;font-weight:600}
+.time{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;min-width:64px}
+.stub{font-size:12px;color:var(--sub);border:1px dashed var(--line);border-radius:8px;
+      padding:5px 8px;margin-top:8px}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);
+       border-radius:10px;padding:10px 14px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button.quiet{border:none;background:none;color:var(--sub);text-decoration:underline;padding:6px}
+button.danger{color:var(--bad);border-color:var(--bad)}
+.btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.datebar{display:flex;align-items:center;gap:8px;margin:6px 0 12px}
+.datebar b{flex:1;text-align:center;font-size:16px}
+.datebar button{padding:8px 14px}
+nav{position:fixed;left:0;right:0;bottom:0;display:flex;background:var(--card);
+    border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom);z-index:5}
+nav button{flex:1;border:none;border-radius:0;background:none;color:var(--sub);
+           font-size:12px;padding:10px 4px 12px}
+nav button.on{color:var(--accent);font-weight:700}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{color:var(--sub);font-weight:500;text-align:left;font-size:12px;padding:5px 6px;
+   border-bottom:1px solid var(--line)}
+td{padding:7px 6px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:none}
+.pre{white-space:pre-wrap;background:#FAF9F5;border:1px solid var(--line);border-radius:8px;
+     padding:10px 12px;font-size:14px;margin:8px 0 0;overflow-wrap:break-word}
+.sentrow{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.sentchip{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--sub)}
+.sentchip.on{background:#E8F3EB;border-color:var(--good);color:var(--good);font-weight:600}
+textarea{width:100%;font:14px/1.5 var(--font);border:1px solid var(--line);border-radius:8px;
+         padding:10px;min-height:150px;resize:vertical;background:#FAF9F5;color:var(--ink)}
+select{font:14px var(--font);border:1px solid var(--line);border-radius:8px;padding:7px 8px;
+       background:var(--card);color:var(--ink);max-width:100%}
+.lockbtn{border:none;background:none;padding:4px 6px;font-size:16px;cursor:pointer;opacity:.45}
+.lockbtn.on{opacity:1}
+.avbtn{padding:4px 9px;border-radius:8px;font-size:14px;border:1px solid var(--line);background:none}
+.avbtn.on-available{background:#E8F3EB;border-color:var(--good)}
+.avbtn.on-unavailable{background:#FBEAE5;border-color:var(--bad)}
+.avbtn.on-injured{background:#FBEAE5;border-color:var(--bad)}
+.avbtn.on-tentative{background:#FdF3DC;border-color:var(--warn)}
+.mx{overflow-x:auto;margin-top:4px}
+.mx table{min-width:100%}
+.mx th,.mx td{padding:5px 4px;text-align:center;font-size:12px;white-space:nowrap}
+.mx td.nm{text-align:left;font-size:13px}
+.mx td.c{cursor:pointer;color:#C8C2B4}
+.mx td.c.oncourt{background:#E3EAF3;color:var(--accent);font-weight:700}
+.mx td.warncount{color:var(--bad);font-weight:700}
+.reason{font-size:13px;background:#FAF9F5;border-left:3px solid var(--accent);
+        padding:8px 10px;border-radius:0 8px 8px 0;margin:8px 0 0;color:var(--ink)}
+.dutyline{font-size:13px;color:var(--sub);margin-top:8px}
+.dutyline b{color:var(--ink);font-weight:600}
+.card.tap{cursor:pointer}
+.msg{border-radius:10px;padding:10px 12px;margin:8px 0;font-size:14px}
+.msg.err{background:#FBEAE5;color:var(--bad)}
+.msg.ok{background:#E8F3EB;color:var(--good)}
+.foot{margin:24px 4px;font-size:12px;color:var(--sub);line-height:1.6}
+input[type=file]{display:none}
+.teamgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.teamtile{border:none;text-align:left;color:#fff;border-radius:var(--radius);padding:14px;min-height:84px}
+.teamtile b{font-size:16px;display:block}
+.teamtile span{font-size:12px;opacity:.85}
+@media (min-width:560px){.teamgrid{grid-template-columns:1fr 1fr 1fr}}
+</style>
+</head>
+<body>
+<header><b>Coach Companion</b><div class="sub" id="hSub">v0.8</div></header>
+<main id="main"></main>
+<nav id="nav"></nav>
+
+<script>
+/* ============================================================================================
+   Coach Companion v0.8 — all game-week modules; PWA wiring (ADR-012): hosted = phone app, file:// = desktop test build.
+   Invariants (see CLAUDE.md): D/S separation; BC ids are identity; contracts refuse with a
+   reason and never half-load; no live-game features. All game-week modules are live; the
+   play-to-win stance activates fully once the club pack carries coach assessments.
+   ============================================================================================ */
+'use strict';
+
+// ---- contracts -------------------------------------------------------------------------------
+const PACK_KIND='coach.pack', FIX_KIND='coach.fixtures', BAK_KIND='coach.backup', CONTRACT_V=1;
+// Hosted (https) = the phone app; file:// = the desktop test build. One file serves both.
+const HOSTED=/^https?:$/.test(location.protocol);
+const APPVER='v0.8'+(HOSTED?'':' — desktop test build');
+const K_PACK='cc.d.pack', K_FIX='cc.d.fixtures', K_S='cc.s';
+
+// ---- state -----------------------------------------------------------------------------------
+let PACK=null;      // D: coach pack (replaced wholesale on import)
+let FIX=null;       // D: fixtures  (replaced wholesale on import/sync)
+let S=null;         // coach state — survives every import
+let VIEW='day';     // day | teams | team | data | game | tpl
+let TEAMKEY=null;   // selected team in team view
+let DAY=null;       // date shown on the day sheet (YYYY-MM-DD)
+let GAMEBC=null;    // selected game (BC match id) in game view
+let PLAYERID=null;  // selected player (BC user id) in player view
+let BACKTO='day';   // where the game view's back button returns
+let NOTE=null;      // one-shot {cls,text} banner
+
+// ---- announcements: three messages per game (ported from Game Time Wizard) -------------------
+const MSGS=[
+  {k:'avail',  label:'Availability request', when:'about 5 days before', short:'A'},
+  {k:'logi',   label:'Logistics + bench duty', when:'2 days before', short:'L'},
+  {k:'gameday',label:'Game-day notice', when:'the evening before or game day', short:'G'},
+];
+const DEFAULT_TPL={
+avail:`\u{1F3C0} {{team_name}} — Game this week
+
+{{game_date}} vs {{opposition}}
+
+Please confirm your child's availability by reply \u{1F44D} (available) / \u{1F44E} (unavailable) / \u{1F915} (injured) by tomorrow night.
+
+Thanks!`,
+logi:`\u{1F3C0} {{team_name}} — Game day reminder
+
+\u{1F4C5} {{game_date}}
+⏰ {{game_time}}
+\u{1F4CD} {{venue}} — {{court}}
+\u{1F19A} {{opposition}}
+
+\u{1FA91} Bench duty: {{duty_family}}
+
+Please arrive 20 min before tip-off.`,
+gameday:`\u{1F3C0} {{team_name}} — Game day!
+
+⏰ {{game_time}} @ {{venue}} {{court}}
+\u{1F19A} {{opposition}}
+
+Available: {{available_count}} players
+\u{1FA91} Bench duty: {{duty_family}}
+
+Rotation:
+{{rotation_chart}}
+
+Let's go! \u{1F525}`};
+const tplOf=k=>(S.templates&&S.templates[k])||DEFAULT_TPL[k];
+// {{token}} substitution; unknown tokens stay visible as a hint to the coach.
+const subst=(tpl,ctx)=>String(tpl||'').replace(/\{\{(\w+)\}\}/g,(f,key)=>key in ctx?ctx[key]:f);
+function msgCtx(g){
+  const t=team(g.team)||{};
+  const av=S.avail[g.bc]; // availability module fills this later; count what exists
+  const n=av?Object.values(av).filter(x=>x==='available').length:null;
+  const fi=fillinsOf(g).length;   // fill-ins are auto-available (ADR-026) — always in the count
+  return {
+    team_name:t.name||'', game_date:niceDate(g.date), game_time:g.time||'TBD',
+    venue:g.venue||'TBD', court:g.court||'', opposition:g.opponent||'TBD',
+    duty_family:(S.duty[g.bc]&&S.duty[g.bc].label)||'(not assigned yet)',
+    rotation_chart:chartText(g),
+    available_count:n==null?(fi?'? + '+fi+' fill-in'+(fi>1?'s':''):'?'):n+fi,
+    unconfirmed_list:(t.players||[]).filter(p=>!avOf(g.bc,p.id)).map(p=>'• '+p.name).join('\n'),
+  };
+}
+const sentOf=g=>S.ann[g.bc]||{};
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const todayStr=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
+const niceDate=iso=>{const[y,m,d]=iso.split('-').map(Number);
+  return new Date(y,m-1,d).toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short'})};
+
+// ---- storage ---------------------------------------------------------------------------------
+function save(){try{
+  PACK?localStorage.setItem(K_PACK,JSON.stringify(PACK)):localStorage.removeItem(K_PACK);
+  FIX ?localStorage.setItem(K_FIX ,JSON.stringify(FIX)) :localStorage.removeItem(K_FIX);
+  localStorage.setItem(K_S,JSON.stringify(S));
+}catch(e){NOTE={cls:'err',text:'Could not write to storage: '+e.message}}}
+function load(){try{
+  PACK=JSON.parse(localStorage.getItem(K_PACK)||'null');
+  FIX =JSON.parse(localStorage.getItem(K_FIX) ||'null');
+  S   =JSON.parse(localStorage.getItem(K_S)   ||'null');
+}catch(e){}
+  if(!S) S=freshS();
+  for(const k of Object.keys(freshS())) if(!(k in S)) S[k]=freshS()[k];}
+function freshS(){return {v:1, ann:{}, duty:{}, dutyEx:{}, fillins:{}, plans:{}, avail:{}, fmt:{}, stance:{}, forms:{}, win:{}, notes:{}, scores:{}, templates:null}}
+
+// ---- scenario fives + crunch sizing (v0.7) ---------------------------------------------------
+// S.forms[teamKey] = {off:[pids], def:[pids], ctrl:[pids]} — coach-predefined lineups.
+// S.win[bcMatchId] = {n, scen} — crunch length (blocks) + which five finishes.
+// Ranking nudge: if fixtures carry own_rank/opp_rank, suggest crunch length from the gap.
+// Thresholds are defaults, not doctrine — the number input always wins (ADR-008).
+// ADR-013 (1 Sep 2026): the rating-based pick is GONE, with the ratings themselves. A rating was
+// made by the club's rating app to build balanced squads — a question settled before round 1 —
+// and it answered nothing in game week except to look like a depth chart. A crunch five is now
+// always a five the COACH named. If none is set, play-to-win falls back to equal time and says so.
+const SCENS=[['off','Offence five'],['def','Defence five'],['ctrl','Game-control five']];
+const formOf=(tk,sc)=>((S.forms[tk]||{})[sc])||[];
+function crunchSuggest(g){
+  if(!(g.own_rank&&g.opp_rank)) return null;
+  const d=Math.abs(g.own_rank-g.opp_rank);
+  const n=d<=2?2:(d<=5?1:0);
+  return {n, why:'Ladder '+g.own_rank+' vs '+g.opp_rank+': '
+    +(d<=2?'close game — suggest holding your finishing five for the last 2 blocks.'
+      :(d<=5?'moderate gap — suggest 1 crunch block.':'big gap — suggest equal time all game.'))};
+}
+const winCfg=g=>{const w=S.win[g.bc]||{};const sg=crunchSuggest(g);
+  return {n:(w.n!=null?w.n:(sg?sg.n:1)), scen:w.scen||'off', sg};};
+
+// ---- availability -----------------------------------------------------------------------------
+// S.avail[bcMatchId][playerId] = 'available' | 'unavailable' | 'injured' | 'tentative'.
+// No entry = unconfirmed. Fill-ins are auto-available (ADR-009) and never appear here.
+const AV=[['available','✓'],['unavailable','✗'],['injured','\u{1F915}'],['tentative','?']];
+const avOf=(bc,pid)=>S.avail[bc]&&S.avail[bc][pid];
+function setAv(bc,pid,st){const a=S.avail[bc]||(S.avail[bc]={});
+  if(a[pid]===st) delete a[pid]; else a[pid]=st;
+  if(!Object.keys(a).length) delete S.avail[bc];
+  save();}
+
+// ---- rotation engine (ported from GTW rotation.js — ADR-001; stance rules ADR-007/008) -------
+const ON_COURT=5;
+function blocksFor(mins,block){const out=[];let f=0;
+  while(f<mins){const t=Math.min(f+block,mins);out.push([f,t]);f=t}return out}
+const stanceOf=g=>S.stance[g.bc]||((team(g.team)||{}).stance)||'equal';
+const fmtFor=g=>(S.fmt&&S.fmt[g.team])||((S.plans[g.bc]||{}).fmt)||{periods:2,mins:20,block:5};
+function entrantsFor(g){
+  const t=team(g.team), out=[];
+  t.players.forEach(p=>{if(avOf(g.bc,p.id)==='available')
+    out.push({id:String(p.id),name:p.name,weight:1})});
+  fillinsOf(g).forEach((f,i)=>out.push({id:'f'+i,name:f.name,weight:f.weight||0.5}));
+  return out;
+}
+function genPlan(g,regen){
+  const ent=entrantsFor(g);
+  if(!ent.length){NOTE={cls:'err',text:'No one is marked available yet — set availability above first (or add a fill-in).'};return}
+  const fmt=fmtFor(g), stance=stanceOf(g);
+  const blocks=[]; const pb=blocksFor(fmt.mins,fmt.block);
+  for(let p=0;p<fmt.periods;p++) for(const[f,to]of pb) blocks.push({p,from:f,to,on:[],locked:false});
+  const old=S.plans[g.bc];
+  if(regen&&old&&old.blocks.length===blocks.length)
+    old.blocks.forEach((ob,i)=>{if(ob.locked){blocks[i].on=[...ob.on];blocks[i].locked=true}});
+  const minutes={},lastOn={};
+  ent.forEach(e=>{minutes[e.id]=0;lastOn[e.id]=-1e9});
+  const reasons=[];
+  const wc=stance==='win'?winCfg(g):{n:0,scen:'off',sg:null};
+  const crunchN=Math.min(wc.n,blocks.length);
+  if(stance==='win'&&wc.sg) reasons.push(wc.sg.why+(wc.sg.n===wc.n?'':' (you set '+wc.n+'.)'));
+  if(stance==='win'&&crunchN===0) reasons.push('Play-to-win with 0 crunch blocks — equal time all game.');
+  // resolve the crunch five ONCE (they stay on for every crunch block)
+  let crunchFive=null;
+  if(stance==='win'&&crunchN>0&&ent.length>ON_COURT){
+    {
+      // Coach-predefined scenario five (ADR-007: the coach decided; the engine just applies it)
+      const wanted=formOf(g.team,wc.scen).map(String);
+      const named=ent.filter(e=>wanted.includes(e.id));
+      const label=SCENS.find(s=>s[0]===wc.scen)[1].toLowerCase();
+      if(named.length){
+        let five=named.slice(0,ON_COURT);
+        if(five.length<ON_COURT){
+          const rest=ent.filter(e=>!five.includes(e));
+          const fill=rest.slice(0,ON_COURT-five.length);
+          reasons.push('Crunch ('+crunchN+' block'+(crunchN>1?'s':'')+'): your '+label+' — but '
+            +(ON_COURT-five.length)+' of them '+(ON_COURT-five.length>1?'are':'is')+' unavailable; topped up with '
+            +fill.map(e=>e.name).join(', ')+' by court-time order.');
+          five=five.concat(fill);
+        } else {
+          reasons.push('Crunch ('+crunchN+' block'+(crunchN>1?'s':'')+'): your '+label+' as set — '
+            +five.map(e=>e.name).join(', ')+'.');
+        }
+        crunchFive=five.map(e=>e.id);
+      } else {
+        reasons.push('Your '+label+' is not set for this team (or none of them are available) — define it '
+          +'under the team’s Scenario fives. Equal time used instead.');
+      }
+    }
+  }
+  blocks.forEach((b,bi)=>{
+    const dur=b.to-b.from;
+    if(b.locked){b.on.forEach(id=>{if(minutes[id]!=null){minutes[id]+=dur;lastOn[id]=bi}});return}
+    let pick;
+    if(ent.length<=ON_COURT){ pick=ent.map(e=>e.id); }
+    else if(crunchFive&&bi>=blocks.length-crunchN){
+      pick=[...crunchFive];
+    } else {
+      // GTW sort: adjusted minutes asc (minutes/weight — fill-ins fall behind faster, so play
+      // less), then higher weight (regulars beat guests at ties), then longest off court.
+      pick=[...ent].sort((a,b2)=>{
+        const adjA=minutes[a.id]/a.weight, adjB=minutes[b2.id]/b2.weight;
+        if(adjA!==adjB) return adjA-adjB;
+        if(a.weight!==b2.weight) return b2.weight-a.weight;
+        const r=lastOn[a.id]-lastOn[b2.id]; if(r) return r;
+        return a.name.localeCompare(b2.name);
+      }).slice(0,ON_COURT).map(e=>e.id);
+    }
+    b.on=pick;
+    pick.forEach(id=>{minutes[id]+=dur;lastOn[id]=bi});
+  });
+  if(ent.length<=ON_COURT) reasons.unshift('Five or fewer available — everyone plays the whole game.');
+  else{const ms=Object.values(minutes);
+    reasons.unshift(ent.length+' on the sheet across '+blocks.length+' blocks — court time runs '
+      +Math.min(...ms).toFixed(0)+'–'+Math.max(...ms).toFixed(0)+' min each'
+      +(ent.some(e=>e.weight<1)?' (fill-ins at their chosen share)':'')+'.');}
+  if(stance==='win'&&crunchN>0&&!crunchFive&&ent.length>ON_COURT)
+    reasons.push('No crunch five could be picked — name one under the team’s Scenario fives. '
+      +'Equal time used throughout.');
+  S.plans[g.bc]={fmt,blocks,minutes,names:Object.fromEntries(ent.map(e=>[e.id,e.name])),stance,reasons};
+  S.fmt[g.team]=fmt;   // remember the format as this team's default
+  save();
+}
+function recomputeMinutes(pl){const m={};Object.keys(pl.names).forEach(id=>m[id]=0);
+  pl.blocks.forEach(b=>{const d=b.to-b.from;b.on.forEach(id=>{if(m[id]!=null)m[id]+=d})});
+  pl.minutes=m;}
+function chartText(g){const pl=S.plans[g.bc];
+  if(!pl) return '(rotation not yet generated)';
+  const lines=pl.blocks.map(b=>'Q'+(b.p+1)+' '+b.from+'-'+b.to+': '
+    +b.on.map(id=>pl.names[id]||'?').join(', '));
+  const sum=Object.entries(pl.minutes).sort((a,b)=>b[1]-a[1])
+    .map(([id,m])=>(pl.names[id]||'?')+' '+m+'m').join(' · ');
+  return lines.join('\n')+'\n\nMinutes: '+sum;}
+
+// ---- fill-in players (GTW ADR-017 + ADR-026 lineage) -----------------------------------------
+// Game-scoped guests. S.fillins[bcMatchId] = [{name, weight, pid?}] — pid set when picked from
+// another of the coach's own teams (keeps the player-card link); free text for anyone else.
+// Auto-available; counted in {{available_count}}; never in duty pools or unconfirmed lists.
+// weight = court-time share for the rotation engine (ADR-017): 1 / .75 / .5 (default) / .25.
+const fillinsOf=g=>S.fillins[g.bc]||[];
+const WEIGHTS=[[1,'full share'],[0.75,'¾ share'],[0.5,'half share'],[0.25,'¼ share']];
+function addFillin(bc,name,pid){
+  name=String(name||'').trim(); if(!name) return 'Type or pick a name first.';
+  const list=S.fillins[bc]||(S.fillins[bc]=[]);
+  if(list.some(f=>f.name.toLowerCase()===name.toLowerCase()))
+    return name+' is already a fill-in for this game.';
+  list.push({name:name, weight:0.5, ...(pid?{pid:+pid}:{})});
+  save(); return null;
+}
+
+// ---- bench duty (GTW ADR-016 lineage: unit is the PLAYER; sibling case = exclude one) --------
+// S.duty[bcMatchId] = {pid, label, locked}; S.dutyEx[teamKey][playerId] = true (out of pool).
+const inPool=(tk,pid)=>!(S.dutyEx[tk]&&S.dutyEx[tk][pid]);
+function dutyCounts(t){const c={}; t.players.forEach(p=>c[p.id]=0);
+  gamesOf(t.key).forEach(g=>{const d=S.duty[g.bc]; if(d&&c[d.pid]!=null)c[d.pid]++}); return c}
+function genDuty(tk,regen){
+  const t=team(tk); if(!t) return 0;
+  const today=todayStr(), gs=gamesOf(tk);
+  if(regen) for(const g of gs){const d=S.duty[g.bc];
+    if(d&&!d.locked&&g.date>=today) delete S.duty[g.bc];}
+  const counts=dutyCounts(t), lastAt={};
+  gs.forEach((g,i)=>{const d=S.duty[g.bc]; if(d)lastAt[d.pid]=i});
+  let n=0;
+  gs.forEach((g,i)=>{
+    if(S.duty[g.bc]) return;
+    if(g.date<today) return;   // past games are history — backfill them manually if known
+    const pool=t.players.filter(p=>{
+      if(!inPool(tk,p.id)) return false;
+      const av=S.avail[g.bc]&&S.avail[g.bc][p.id];
+      return av!=='unavailable'&&av!=='injured';});   // skipped now, caught up later (low count)
+    if(!pool.length) return;
+    pool.sort((a,b)=>counts[a.id]-counts[b.id]
+      ||((lastAt[a.id]??-1)-(lastAt[b.id]??-1))
+      ||a.name.localeCompare(b.name));
+    const p=pool[0];
+    S.duty[g.bc]={pid:p.id,label:p.name+"’s family",locked:false};
+    counts[p.id]++; lastAt[p.id]=i; n++;
+  });
+  save(); return n;
+}
+function setDuty(bc,pid,tk){
+  if(!pid){delete S.duty[bc]}
+  else{const t=team(tk), p=t&&t.players.find(x=>x.id===+pid);
+    if(p) S.duty[bc]={pid:p.id,label:p.name+"’s family",locked:true}}  // manual choice sticks
+  save();
+}
+function dutySelect(g,tk){
+  const t=team(tk), cur=S.duty[g.bc];
+  return '<select data-duty="'+esc(g.bc)+'" data-dteam="'+esc(tk)+'">'
+    +'<option value="">—</option>'
+    +[...t.players].sort((a,b)=>a.name.localeCompare(b.name)).map(p=>
+      '<option value="'+p.id+'"'+(cur&&cur.pid===p.id?' selected':'')+'>'
+      +esc(p.name)+(inPool(tk,p.id)?'':' (out of pool)')+'</option>').join('')
+    +'</select>';
+}
+
+// ---- contract readers: refuse with a reason, never half-load ---------------------------------
+function readJson(txt,label){
+  let o; try{o=JSON.parse(txt)}catch(e){return{err:'That file could not be read as JSON — it should be the '+label+' file.'}}
+  return {o};
+}
+function readPack(txt){
+  const r=readJson(txt,'coach pack'); if(r.err)return r; const o=r.o;
+  if(!o||o.kind!==PACK_KIND) return{err: o&&o.kind===FIX_KIND
+    ? 'That is a fixtures file. Load it with “Load fixtures” instead.'
+    : 'That is not a coach pack from the club.'};
+  if(+o.v>CONTRACT_V) return{err:'That pack was written by a newer club tool than this app knows about. Update the app.'};
+  if(!Array.isArray(o.teams)||!o.teams.length) return{err:'That pack has no teams in it.'};
+  for(const t of o.teams){
+    if(!t.key||!t.name) return{err:'That pack has a team without a key or name.'};
+    if(!Array.isArray(t.players)) return{err:'Team '+t.name+' has no player list.'};
+    for(const p of t.players){
+      if(typeof p.id!=='number') return{err:'Team '+t.name+' has a player without a Basketball Connect id. '
+        +'Every player must carry one — it is the only thing records are matched on.'};
+      if(!p.name) return{err:'Team '+t.name+' has a player (id '+p.id+') without a name.'};
+    }
+  }
+  return {o};
+}
+function readFixtures(txt){
+  const r=readJson(txt,'fixtures'); if(r.err)return r; const o=r.o;
+  if(!o||o.kind!==FIX_KIND) return{err: o&&o.kind===PACK_KIND
+    ? 'That is a coach pack. Load it with “Load coach pack” instead.'
+    : 'That is not a fixtures file from the club.'};
+  if(+o.v>CONTRACT_V) return{err:'That fixtures file was written by a newer club tool than this app knows about. Update the app.'};
+  if(!Array.isArray(o.games)) return{err:'That fixtures file has no games list.'};
+  for(const g of o.games){
+    if(!g.team||!g.date) return{err:'A game in that file is missing its team or date.'};
+    if(!g.bc) return{err:'A game ('+g.team+' '+g.date+') is missing its Basketball Connect match id.'};
+  }
+  return {o};
+}
+function readBackup(txt){
+  const r=readJson(txt,'backup'); if(r.err)return r; const o=r.o;
+  if(!o||o.kind!==BAK_KIND) return{err:'That is not a Coach Companion backup file.'};
+  if(+o.v>CONTRACT_V) return{err:'That backup was written by a newer Coach Companion. Update the app.'};
+  if(!o.s) return{err:'That backup has no coach state in it.'};
+  return {o};
+}
+
+// ---- imports. D is replaced wholesale; S is never touched by a D import. ---------------------
+function importPack(txt){const r=readPack(txt);
+  if(r.err){NOTE={cls:'err',text:r.err}}
+  else{PACK=r.o; NOTE={cls:'ok',text:'Coach pack loaded — '+PACK.teams.length+' team'+(PACK.teams.length>1?'s':'')
+    +', '+PACK.teams.reduce((n,t)=>n+t.players.length,0)+' players ('+esc(PACK.season||'')+', published '+esc(PACK.published||'?')+').'};
+    save()} render();}
+function importFixtures(txt){const r=readFixtures(txt);
+  if(r.err){NOTE={cls:'err',text:r.err}}
+  else{
+    // In-place layer replace. Games are matched downstream by BC id (team+date fallback), so S
+    // keyed by BC id survives a fixtures re-import untouched — reschedules do not orphan state.
+    const known=PACK?new Set(PACK.teams.map(t=>t.key)):null;
+    const stray=known?r.o.games.filter(g=>!known.has(g.team)).length:0;
+    FIX=r.o; save();
+    NOTE={cls:'ok',text:'Fixtures loaded — '+FIX.games.length+' games (published '+esc(FIX.published||'?')+').'
+      +(stray?' Note: '+stray+' game(s) belong to teams not in your pack and will not show.':'')};
+  } render();}
+function importBackup(txt){const r=readBackup(txt);
+  if(r.err){NOTE={cls:'err',text:r.err}}
+  else{S=r.o.s; save(); NOTE={cls:'ok',text:'Backup restored (written '+esc(r.o.written||'?')+'). Your coach state has been replaced with the backup.'}}
+  render();}
+
+function download(name,text){
+  // On a phone, hand the file to the share sheet (Save to Files / AirDrop / Mail). A blob link in
+  // an iPhone home-screen app opens a preview with no way back to the app. Desktop keeps the link.
+  try{
+    const f=new File([text],name,{type:'application/json'});
+    if(HOSTED&&matchMedia('(pointer:coarse)').matches&&navigator.canShare&&navigator.canShare({files:[f]})){
+      navigator.share({files:[f],title:name}).catch(e=>{if(e&&e.name!=='AbortError')saveLink(name,text)});
+      return}
+  }catch(e){}
+  saveLink(name,text);
+}
+function saveLink(name,text){
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([text],{type:'application/json'}));
+  a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+}
+function backupFile(){
+  return JSON.stringify({kind:BAK_KIND,v:CONTRACT_V,written:todayStr(),s:S},null,1);
+}
+
+// ---- derived ---------------------------------------------------------------------------------
+const teams=()=>PACK?PACK.teams:[];
+const team=k=>teams().find(t=>t.key===k)||null;
+const games=()=>FIX?FIX.games.filter(g=>!PACK||team(g.team)):[];
+const gamesOf=k=>games().filter(g=>g.team===k).sort((a,b)=>a.date===b.date?String(a.time).localeCompare(String(b.time)):a.date<b.date?-1:1);
+const gameDays=()=>[...new Set(games().map(g=>g.date))].sort();
+function defaultDay(){const ds=gameDays(); if(!ds.length)return null;
+  const t=todayStr(); return ds.find(d=>d>=t)||ds[ds.length-1];}
+
+// ---- rendering -------------------------------------------------------------------------------
+function render(){
+  $('hSub').textContent = PACK ? esc(PACK.club+' · '+(PACK.season||'')) : APPVER;
+  const m=$('main'); let h='';
+  if(NOTE){h+='<div class="msg '+NOTE.cls+'">'+esc(NOTE.text)+'</div>'; NOTE=null;}
+  if(!PACK) h+=welcome();
+  else if(VIEW==='day')   h+=daySheet();
+  else if(VIEW==='teams') h+=teamsView();
+  else if(VIEW==='team')  h+=teamView();
+  else if(VIEW==='player')h+=playerView();
+  else if(VIEW==='game')  h+=gameView();
+  else if(VIEW==='tpl')   h+=tplView();
+  else if(VIEW==='data')  h+=dataView();
+  m.innerHTML=h;
+  $('nav').innerHTML = PACK ? ['day|Day sheet','teams|Teams','data|Data']
+    .map(x=>{const[v,l]=x.split('|');
+      const on=(VIEW===v)||(v==='teams'&&(VIEW==='team'||VIEW==='player'))||(v==='data'&&VIEW==='tpl')
+        ||(VIEW==='game'&&(v===BACKTO||(v==='teams'&&BACKTO==='team')));
+      return '<button data-nav="'+v+'" class="'+(on?'on':'')+'">'+l+'</button>'}).join('') : '';
+  wire();
+}
+
+function welcome(){
+  return '<div class="card"><b>Welcome.</b>'
+    +'<p class="tiny">This app runs entirely on this device. It needs two files from the club to start:</p>'
+    +'<p class="tiny"><b>1. The coach pack</b> — your teams, your players, their jersey numbers and playing records. Supplied to you at the start of the season. Never hosted anywhere.</p>'
+    +'<p class="tiny"><b>2. The fixtures file</b> — the season schedule. Re-load it whenever the club issues an update; everything you have entered survives.</p>'
+    +'<div class="btnrow"><button class="primary" data-act="loadPack">Load coach pack</button>'
+    +'<button data-act="loadFix">Load fixtures</button>'
+    +'<button class="quiet" data-act="loadBak">Restore a backup</button></div></div>';
+}
+
+function daySheet(){
+  if(!DAY) DAY=defaultDay();
+  const ds=gameDays();
+  if(!ds.length) return '<div class="card">No fixtures loaded yet.'
+    +'<div class="btnrow"><button class="primary" data-act="loadFix">Load fixtures</button></div></div>';
+  const i=ds.indexOf(DAY);
+  const dayGames=games().filter(g=>g.date===DAY)
+    .sort((a,b)=>String(a.time).localeCompare(String(b.time)));
+  const past=DAY<todayStr();
+  let h='<div class="datebar">'
+    +'<button data-act="dPrev" '+(i<=0?'disabled':'')+'>&larr;</button>'
+    +'<b>'+esc(niceDate(DAY))+(past?' <span class="tiny">(played)</span>':'')+'</b>'
+    +'<button data-act="dNext" '+(i>=ds.length-1?'disabled':'')+'>&rarr;</button></div>';
+  if(!dayGames.length) h+='<div class="card">No games this day.</div>';
+  for(const g of dayGames){
+    const t=team(g.team), sent=sentOf(g);
+    h+='<div class="card tap'+(past?' dim':'')+'" data-game="'+esc(g.bc)+'" data-backto="day"><div class="row">'
+      +'<div class="time">'+esc(g.time||'—')+'</div>'
+      +'<div class="grow"><span class="chip" style="background:'+esc(t.color||'#555')+'">'+esc(t.name)+'</span>'
+      +' <span class="tiny">R'+esc(g.round)+' · '+esc(t.division||'')+'</span>'
+      +'<div class="big">vs '+esc(g.opponent||'TBC')+'</div>'
+      +'<div class="tiny">'+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</div></div></div>'
+      +'<div class="dutyline">\u{1FA91} '+(S.duty[g.bc]?'<b>'+esc(S.duty[g.bc].label)+'</b>'
+        +(S.duty[g.bc].locked?' \u{1F512}':''):'no bench duty assigned')
+      +(fillinsOf(g).length?' &nbsp;·&nbsp; +'+fillinsOf(g).length+' fill-in'
+        +(fillinsOf(g).length>1?'s':''):'')
+      +(S.plans[g.bc]?' &nbsp;·&nbsp; rotation ✓':'')+'</div>'
+      +'<div class="sentrow">'
+      +MSGS.map(m=>'<span class="sentchip'+(sent[m.k]?' on':'')+'">'+(sent[m.k]?'✓ ':'')+esc(m.label)+'</span>').join('')
+      +'</div>'
+      +'</div>';
+  }
+  return h;
+}
+
+function teamsView(){
+  let h='<h2>Your teams</h2><div class="teamgrid">';
+  for(const t of teams()){
+    h+='<button class="teamtile" style="background:'+esc(t.color||'#555')+'" data-team="'+esc(t.key)+'">'
+      +'<b>'+esc(t.name)+'</b><span>'+esc(t.age_group||'')+' '+esc(t.division||'')+' · '
+      +t.players.length+' players</span></button>';
+  }
+  return h+'</div>';
+}
+
+function teamView(){
+  const t=team(TEAMKEY); if(!t){VIEW='teams';return teamsView()}
+  let h='<button class="quiet" data-act="back">&larr; Teams</button>'
+    +'<div class="card"><div class="row"><span class="chip" style="background:'+esc(t.color||'#555')+'">'+esc(t.name)+'</span>'
+    +'<span class="tiny">'+esc(t.age_group||'')+' '+esc(t.division||'')+' · stance: '+esc(t.stance||'equal')+'</span></div></div>'
+    +'<h2>Roster</h2><div class="card"><table><tr><th>#</th><th>Player</th><th>Seasons</th></tr>';
+  for(const p of [...t.players].sort((a,b)=>a.name.localeCompare(b.name))){
+    const hist=(p.card&&p.card.record)?[...new Set(p.card.record.map(r=>r.season))].length:0;
+    h+='<tr class="tap" data-player="'+p.id+'"><td>'+(p.jersey==null?'—':esc(p.jersey))+'</td>'
+      +'<td>'+esc(p.name)+'</td>'
+      +'<td class="tiny">'+(hist||'—')+'</td></tr>';
+  }
+  h+='</table><div class="tiny" style="margin-top:8px">Tap a player for their card. '
+    +'Jerseys and records come from the club pack — they are not edited here.</div></div>';
+  // ---- bench duty ----
+  const dgs=gamesOf(t.key);
+  if(dgs.length){
+    const counts=dutyCounts(t), today2=todayStr();
+    h+='<h2>Bench duty</h2><div class="card">'
+      +'<div class="btnrow" style="margin:0 0 10px"><button class="primary" data-dgen="'+esc(t.key)+'">Fill the blanks</button>'
+      +'<button data-dregen="'+esc(t.key)+'">Regenerate (keeps \u{1F512})</button></div>'
+      +'<table><tr><th>R</th><th>Date</th><th>Duty</th><th></th></tr>';
+    for(const g of dgs){
+      const d=S.duty[g.bc];
+      h+='<tr'+(g.date<today2?' style="opacity:.6"':'')+'><td>'+esc(g.round)+'</td>'
+        +'<td class="tiny">'+esc(niceDate(g.date))+'</td>'
+        +'<td>'+dutySelect(g,t.key)+'</td>'
+        +'<td><button class="lockbtn'+(d&&d.locked?' on':'')+'" data-dlock="'+esc(g.bc)+'" '
+        +(d?'':'disabled')+' title="Locked assignments survive regeneration">'+(d&&d.locked?'\u{1F512}':'\u{1F513}')+'</button></td></tr>';
+    }
+    h+='</table><div class="tiny" style="margin-top:8px">Equal turns across the season; a player skipped '
+      +'while unavailable is first in line next time. Picking a name yourself locks it. Past games can be '
+      +'backfilled so earlier turns count toward fairness.</div></div>';
+    h+='<div class="card"><b>Duty pool</b><div class="tiny" style="margin-bottom:6px">Untick a sibling so the family '
+      +'takes one turn, or anyone the roster should skip.</div><table>';
+    for(const p of [...t.players].sort((a,b)=>a.name.localeCompare(b.name))){
+      h+='<tr><td><label class="row" style="gap:8px"><input type="checkbox" data-dpool="'+p.id+'" data-dpteam="'+esc(t.key)+'"'
+        +(inPool(t.key,p.id)?' checked':'')+'> '+esc(p.name)+'</label></td>'
+        +'<td class="tiny" style="text-align:right">'+(counts[p.id]||0)+' turn'+((counts[p.id]||0)===1?'':'s')+'</td></tr>';
+    }
+    h+='</table></div>';
+  }
+
+  // ---- scenario fives (crunch lineups the coach predefines; ADR-010) ----
+  h+='<h2>Scenario fives</h2><div class="card">'
+    +'<div class="tiny" style="margin-bottom:8px">Pick the five you want finishing games in each situation. '
+    +'Used by play-to-win crunch blocks; the rotation screen picks which one applies. '
+    +'A crunch five is always one you named — the app never picks it for you.</div>';
+  for(const[sc,label]of SCENS){
+    const cur=formOf(t.key,sc);
+    h+='<div style="margin-bottom:10px"><b class="tiny" style="color:var(--ink)">'+label+'</b>'
+      +(cur.length&&cur.length!==5?' <span class="tiny" style="color:var(--bad)">('+cur.length+' picked — needs 5)</span>':'')
+      +'<div class="sentrow" style="margin-top:4px">'
+      +[...t.players].sort((a,b)=>a.name.localeCompare(b.name)).map(p=>
+        '<button class="sentchip'+(cur.includes(p.id)?' on':'')+'" data-form="'+sc+'|'+p.id+'">'
+        +esc(p.name.split(' ')[0])+'</button>').join('')
+      +'</div></div>';
+  }
+  h+='</div>';
+
+  h+='<h2>Fixtures</h2>';
+  const gs=gamesOf(t.key), past=todayStr();
+  if(!gs.length) h+='<div class="card">No fixtures loaded for this team.</div>';
+  else{h+='<div class="card"><table><tr><th>R</th><th>Date</th><th>Time</th><th>Opponent</th><th>Where</th></tr>';
+    for(const g of gs){h+='<tr class="tap" data-game="'+esc(g.bc)+'" data-backto="team"'
+      +(g.date<past?' style="opacity:.5"':'')+'><td>'+esc(g.round)+'</td>'
+      +'<td>'+esc(niceDate(g.date))+'</td><td>'+esc(g.time||'')+'</td><td>'+esc(g.opponent||'TBC')+'</td>'
+      +'<td class="tiny">'+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</td></tr>';}
+    h+='</table><div class="tiny" style="margin-top:8px">Tap a game for its announcements.</div></div>';}
+  return h;
+}
+
+function playerView(){
+  const t=team(TEAMKEY), p=t&&t.players.find(x=>x.id===PLAYERID);
+  if(!p){VIEW='team';return teamView()}
+  let h='<button class="quiet" data-act="back2team">&larr; '+esc(t.name)+'</button>'
+    +'<div class="card"><div class="row"><span class="chip" style="background:'+esc(t.color||'#555')+'">'+esc(t.name)+'</span>'
+    +'<div class="grow"><b style="font-size:18px">'+esc(p.name)+'</b>'
+    +'<div class="tiny">'+esc(t.age_group||'')+' '+esc(t.division||'')
+    +' · Jersey '+(p.jersey==null?'—':esc(p.jersey))+'</div></div></div></div>';
+
+  // ---- playing record (from the club pack — TMS is the source of truth) ----
+  h+='<h2>Playing record</h2>';
+  const rec=(p.card&&p.card.record)||[];
+  if(!rec.length){
+    h+='<div class="card tiny">No competition history in the club pack yet — this is their first season on record.</div>';
+  }else{
+    h+='<div class="card"><table><tr><th>Season</th><th>Team</th><th>G</th><th>Pts</th><th>PPG</th><th>F/G</th></tr>';
+    for(const r of rec){
+      const ppg=r.games?(r.pts/r.games).toFixed(1):'—';
+      const fpg=r.games?((r.pf||0)/r.games).toFixed(1):'—';
+      h+='<tr><td class="tiny">'+esc(r.season)+'</td>'
+        +'<td>'+esc(r.team.replace(/ Citipointe /,' '))+'<div class="tiny">'+esc(r.div||'')+'</div></td>'
+        +'<td>'+esc(r.games)+'</td><td>'+esc(r.pts)+'</td><td>'+ppg+'</td><td>'+fpg+'</td></tr>';
+    }
+    h+='</table><div class="tiny" style="margin-top:8px">Playing up a bracket means being the youngest '
+      +'on the court, so those games read lower — that is what being asked up looks like, not a drop in form.</div></div>';
+  }
+
+  // ADR-013: no ratings section. A pre-season rating is a formation judgement; the card shows
+  // what the child has DONE, and the coach's own notes if the pack carries any.
+  const c=p.card||{};
+  {
+
+    if(c.going_well||c.work_on||c.note){
+      h+='<div class="card">'
+        +(c.going_well?'<b>Going well</b><div class="tiny">'+esc(c.going_well)+'</div>':'')
+        +(c.work_on?'<b style="display:block;margin-top:8px">What we will work on</b><div class="tiny">'+esc(c.work_on)+'</div>':'')
+        +(c.note?'<b style="display:block;margin-top:8px">From the coach</b><div class="tiny">'+esc(c.note)+'</div>':'')
+        +(c.assessed_by?'<div class="tiny" style="margin-top:8px">Assessed by '+esc(c.assessed_by)
+          +(c.assessed_on?' on '+esc(c.assessed_on):'')+'.</div>':'')
+        +'</div>';
+    }
+  }
+  return h;
+}
+
+function gameView(){
+  const g=games().find(x=>String(x.bc)===String(GAMEBC));
+  if(!g){VIEW=BACKTO;return VIEW==='team'?teamView():daySheet()}
+  const t=team(g.team), sent=sentOf(g);
+  let h='<button class="quiet" data-act="gback">&larr; Back</button>'
+    +'<div class="card"><div class="row">'
+    +'<span class="chip" style="background:'+esc(t.color||'#555')+'">'+esc(t.name)+'</span>'
+    +'<div class="grow"><b>vs '+esc(g.opponent||'TBC')+'</b>'
+    +'<div class="tiny">R'+esc(g.round)+' · '+esc(niceDate(g.date))+' '+esc(g.time||'')
+    +' · '+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</div></div></div></div>'
+    +'<h2>Bench duty</h2><div class="card"><div class="row">'
+    +'<div class="grow">'+dutySelect(g,g.team)+'</div>'
+    +'<button class="lockbtn'+(S.duty[g.bc]&&S.duty[g.bc].locked?' on':'')+'" data-dlock="'+esc(g.bc)+'" '
+    +(S.duty[g.bc]?'':'disabled')+'>'+(S.duty[g.bc]&&S.duty[g.bc].locked?'\u{1F512}':'\u{1F513}')+'</button></div>'
+    +'<div class="tiny" style="margin-top:6px">Picking a name locks it against regeneration. The duty line in the '
+    +'messages below updates as you change this.</div></div>';
+
+  // ---- availability ----
+  const roster=[...t.players].sort((a,b)=>a.name.localeCompare(b.name));
+  const avEntries=S.avail[g.bc]||{};
+  const nAvail=roster.filter(p=>avOf(g.bc,p.id)==='available').length;
+  const nUnconf=roster.filter(p=>!avOf(g.bc,p.id)).length;
+  h+='<h2>Availability</h2><div class="card">'
+    +'<div class="btnrow" style="margin:0 0 8px"><button data-avall="1">Mark all available</button>'
+    +'<button class="quiet" data-avclear="1">Clear</button></div><table>';
+  for(const p of roster){
+    const cur=avOf(g.bc,p.id);
+    h+='<tr><td>'+esc(p.name)+'</td><td style="text-align:right;white-space:nowrap">'
+      +AV.map(([st,sym])=>'<button class="avbtn'+(cur===st?' on-'+st:'')+'" data-av="'+p.id+'|'+st
+        +'" title="'+st+'">'+sym+'</button>').join(' ')+'</td></tr>';
+  }
+  for(const f of fillinsOf(g))
+    h+='<tr><td>'+esc(f.name)+' <span class="tiny">(fill-in)</span></td>'
+      +'<td class="tiny" style="text-align:right">Auto · available</td></tr>';
+  h+='</table><div class="tiny" style="margin-top:8px">'+nAvail+' available'
+    +(fillinsOf(g).length?' + '+fillinsOf(g).length+' fill-in'+(fillinsOf(g).length>1?'s':''):'')
+    +' · '+nUnconf+' unconfirmed. Tap ✓ ✗ \u{1F915} ? as replies come in; tap again to clear. '
+    +'Duty regeneration skips unavailable and injured players.</div></div>';
+
+  // ---- fill-in players (game-scoped guests) ----
+  const fis=fillinsOf(g);
+  const others=teams().filter(x=>x.key!==g.team)
+    .flatMap(x=>x.players.map(p=>({pid:p.id,label:p.name+' ('+x.name+')',name:p.name})))
+    .sort((a,b)=>a.label.localeCompare(b.label));
+  h+='<h2>Fill-in players</h2><div class="card">';
+  if(fis.length){
+    h+='<table><tr><th>Player</th><th>Court time</th><th></th></tr>';
+    fis.forEach((f,i)=>{
+      h+='<tr><td>'+esc(f.name)+(f.pid?' <span class="tiny">(your squad)</span>':'')+'</td>'
+        +'<td><select data-fiw="'+i+'">'
+        +WEIGHTS.map(w=>'<option value="'+w[0]+'"'+(f.weight===w[0]?' selected':'')+'>'+w[1]+'</option>').join('')
+        +'</select></td>'
+        +'<td style="text-align:right"><button class="quiet" data-firm="'+i+'">remove</button></td></tr>';
+    });
+    h+='</table>';
+  } else h+='<div class="tiny">No fill-ins for this game.</div>';
+  h+='<div class="btnrow">'
+    +(others.length?'<select data-fipick style="flex:1;min-width:150px"><option value="">Borrow from your squads…</option>'
+      +others.map(o=>'<option value="'+o.pid+'" data-name="'+esc(o.name)+'">'+esc(o.label)+'</option>').join('')
+      +'</select>':'')
+    +'<input type="text" id="fiName" placeholder="…or type a name" '
+    +'style="flex:1;min-width:130px;font:14px var(--font);border:1px solid var(--line);border-radius:8px;padding:8px 10px">'
+    +'<button class="primary" data-fiadd="1">Add</button></div>'
+    +'<div class="tiny" style="margin-top:6px">Fill-ins are counted as available and get the chosen share of '
+    +'court time when the rotation is generated — half share by default, so they play without displacing '
+    +'your regulars. They never enter the duty pool.</div></div>';
+
+  // ---- rotation ----
+  const fmt=fmtFor(g), stance=stanceOf(g), pl=S.plans[g.bc];
+  h+='<h2>Rotation</h2><div class="card">'
+    +'<div class="btnrow" style="margin:0 0 8px;align-items:center">'
+    +'<select data-fmt="periods">'+[1,2,3,4].map(x=>'<option value="'+x+'"'+(fmt.periods===x?' selected':'')+'>'+x+' period'+(x>1?'s':'')+'</option>').join('')+'</select>'
+    +'<select data-fmt="mins">'+[8,10,12,15,20].map(x=>'<option value="'+x+'"'+(fmt.mins===x?' selected':'')+'>× '+x+' min</option>').join('')+'</select>'
+    +'<label class="tiny" style="white-space:nowrap">subs every '
+    +'<input type="number" data-fmtnum="block" min="1" max="'+fmt.mins+'" step="1" value="'+fmt.block
+    +'" style="width:56px;font:14px var(--font);border:1px solid var(--line);border-radius:8px;padding:6px 8px"> min</label>'
+    +'<select data-stance="1"><option value="equal"'+(stance==='equal'?' selected':'')+'>equal time</option>'
+    +'<option value="win"'+(stance==='win'?' selected':'')+'>play to win</option></select></div>';
+  if(stance==='win'){
+    const wc=winCfg(g), nb=fmtFor(g), totalBlocks=blocksFor(nb.mins,nb.block).length*nb.periods;
+    h+='<div class="btnrow" style="margin:0 0 8px;align-items:center">'
+      +'<label class="tiny" style="white-space:nowrap">crunch: last '
+      +'<input type="number" data-winn="1" min="0" max="'+totalBlocks+'" step="1" value="'+wc.n
+      +'" style="width:56px;font:14px var(--font);border:1px solid var(--line);border-radius:8px;padding:6px 8px"> block(s)</label>'
+      +'<select data-wins="1">'+SCENS.map(s=>{
+        const set=formOf(g.team,s[0]).length>0;
+        return '<option value="'+s[0]+'"'+(wc.scen===s[0]?' selected':'')+(set?'':' disabled')
+          +'>'+s[1]+(set?'':' (not set)')+'</option>';}).join('')+'</select></div>'
+      +(wc.sg?'<div class="tiny" style="margin:0 0 8px">'+esc(wc.sg.why)+'</div>':'');
+  }
+  h+='<div class="btnrow" style="margin:0">'
+    +'<button class="primary" data-genplan="1">'+(pl?'Regenerate (keeps \u{1F512})':'Generate rotation')+'</button>'
+    +(pl?'<button class="quiet" data-clearplan="1">Clear plan</button>':'')+'</div>';
+  if(pl){
+    for(const r of pl.reasons||[]) h+='<div class="reason">'+esc(r)+'</div>';
+    const ids=Object.keys(pl.names).sort((a,b)=>pl.names[a].localeCompare(pl.names[b]));
+    h+='<div class="mx"><table><tr><th style="text-align:left">Player</th>'
+      +pl.blocks.map((b,bi)=>'<th class="c" data-blklock="'+bi+'" title="Tap to lock/unlock this block">'
+        +'Q'+(b.p+1)+'<br>'+b.from+'–'+b.to+(b.locked?' \u{1F512}':'')+'</th>').join('')
+      +'<th>Min</th></tr>';
+    for(const id of ids){
+      h+='<tr><td class="nm">'+esc(pl.names[id])+(id[0]==='f'?' <span class="tiny">(fill-in)</span>':'')+'</td>'
+        +pl.blocks.map((b,bi)=>'<td class="c'+(b.on.includes(id)?' oncourt':'')+'" data-cell="'+bi+'|'+esc(id)+'">'
+          +(b.on.includes(id)?'●':'·')+'</td>').join('')
+        +'<td><b>'+(pl.minutes[id]||0)+'</b></td></tr>';
+    }
+    h+='<tr><td class="tiny">on court</td>'
+      +pl.blocks.map(b=>'<td class="tiny'+(b.on.length!==ON_COURT?' warncount':'')+'">'+b.on.length+'</td>').join('')
+      +'<td></td></tr></table></div>'
+      +'<div class="tiny" style="margin-top:8px">Tap a dot to put a player on or off court in that block — '
+      +'edited blocks lock (\u{1F512}) and survive regeneration; tap a column header to unlock. '
+      +'A red count means the block does not have '+ON_COURT+' on court. '
+      +'The chart flows into the game-day message below.</div>';
+  } else {
+    h+='<div class="tiny" style="margin-top:8px">Uses everyone marked available plus fill-ins at their share. '
+      +'Format is remembered per team once you generate.</div>';
+  }
+  h+='</div>';
+
+  h+='<h2>Announcements — copy, paste into the team group</h2>';
+  for(const m of MSGS){
+    const done=sent[m.k];
+    h+='<div class="card"><div class="row"><div class="grow"><b>'+esc(m.label)+'</b>'
+      +'<div class="tiny">send '+esc(m.when)+'</div></div>'
+      +'<span class="sentchip'+(done?' on':'')+'">'+(done?'✓ sent '+esc(niceDate(done)):'not sent')+'</span></div>'
+      +'<div class="pre" id="pre-'+m.k+'">'+esc(subst(tplOf(m.k),msgCtx(g)))+'</div>'
+      +'<div class="btnrow"><button class="primary" data-copy="'+m.k+'">Copy</button>'
+      +'<button data-sent="'+m.k+'">'+(done?'Unmark sent':'Mark as sent')+'</button></div></div>';
+  }
+  h+='<div class="tiny" style="margin:12px 4px">Bench duty and rotation lines show placeholders until those modules are built. '
+    +'Edit the wording under Data → Message templates.</div>';
+  return h;
+}
+
+function tplView(){
+  let h='<button class="quiet" data-act="tback">&larr; Data</button>'
+    +'<h2>Message templates</h2>'
+    +'<div class="card tiny">Tokens are filled in per game: {{team_name}} {{game_date}} {{game_time}} '
+    +'{{venue}} {{court}} {{opposition}} {{duty_family}} {{available_count}} {{rotation_chart}}. '
+    +'An unknown token stays visible in the message so you can spot the typo. Changes apply to every game.</div>';
+  for(const m of MSGS){
+    const custom=S.templates&&S.templates[m.k];
+    h+='<div class="card"><b>'+esc(m.label)+'</b>'+(custom?' <span class="tiny">(customised)</span>':'')
+      +'<textarea id="ta-'+m.k+'">'+esc(tplOf(m.k))+'</textarea>'
+      +'<div class="btnrow"><button class="primary" data-tplsave="'+m.k+'">Save</button>'
+      +(custom?'<button data-tplreset="'+m.k+'">Reset to default</button>':'')+'</div></div>';
+  }
+  return h;
+}
+
+function dataView(){
+  const np=PACK?PACK.teams.reduce((n,t)=>n+t.players.length,0):0;
+  let h='<h2>Supplied by the club</h2><div class="card">'
+    +'<b>Coach pack</b><div class="tiny">'+(PACK?esc(PACK.season||'')+' · '+teams().length+' teams · '+np
+      +' players · published '+esc(PACK.published||'?'):'not loaded')+'</div>'
+    +'<div class="btnrow"><button data-act="loadPack">Load a new pack</button></div>'
+    +'<div class="tiny" style="margin-top:10px"><b>Fixtures</b></div>'
+    +'<div class="tiny">'+(FIX?games().length+' games · published '+esc(FIX.published||'?'):'not loaded')+'</div>'
+    +'<div class="btnrow"><button data-act="loadFix">Load updated fixtures</button></div>'
+    +'<div class="tiny" style="margin-top:10px">Re-loading either file replaces it wholesale and never touches what you have entered.</div>'
+    +'</div>'
+    +'<h2>Messages</h2><div class="card"><b>Message templates</b>'
+    +'<div class="tiny">The wording of the three per-game announcements.</div>'
+    +'<div class="btnrow"><button data-act="tpl">Edit templates</button></div></div>'
+    +'<h2>Yours</h2><div class="card"><b>Coach state</b>'
+    +'<div class="tiny">Duty, rotation plans, availability, announcement ticks, notes. Lives only on this device — back it up.</div>'
+    +'<div class="btnrow"><button class="primary" data-act="backup">Save a backup file</button>'
+    +'<button data-act="loadBak">Restore a backup</button></div></div>'
+    +'<h2>Danger zone</h2><div class="card">'
+    +'<div class="btnrow"><button class="danger" data-act="wipe">Empty the app</button></div>'
+    +'<div class="tiny" style="margin-top:6px">Removes the pack, fixtures and all coach state from this device. Save a backup first — this cannot be undone.</div></div>'
+    +'<div class="foot">Coach Companion '+APPVER+' · data never leaves this device.<br>'
+    +'Contracts: coach.pack v'+CONTRACT_V+' · coach.fixtures v'+CONTRACT_V+'</div>';
+  return h;
+}
+
+// ---- events ----------------------------------------------------------------------------------
+function pickFile(cb){
+  // Safari refuses to open a picker for an input that is not in the document, and its picker
+  // can grey out .json files when an accept filter is set — so: attach, no filter, clean up.
+  const inp=document.createElement('input'); inp.type='file';
+  inp.style.cssText='position:fixed;left:-9999px;top:0';
+  const done=()=>{if(inp.parentNode)inp.parentNode.removeChild(inp)};
+  inp.onchange=()=>{const f=inp.files[0]; if(!f){done();return}
+    const rd=new FileReader();
+    rd.onload=()=>{done();cb(rd.result)};
+    rd.onerror=()=>{done();NOTE={cls:'err',text:'That file could not be read from disk. Try again.'};render()};
+    rd.readAsText(f)};
+  document.body.appendChild(inp);
+  inp.click();
+}
+function copyText(txt,btn){
+  // navigator.clipboard needs a secure context — absent on file://, so fall back to execCommand.
+  const flash=ok=>{const old=btn.textContent;btn.textContent=ok?'Copied ✓':'Copy failed — select & copy manually';
+    setTimeout(()=>{btn.textContent=old},1400)};
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(()=>flash(true),()=>legacyCopy(txt,flash));
+  } else legacyCopy(txt,flash);
+}
+function legacyCopy(txt,flash){
+  const ta=document.createElement('textarea'); ta.value=txt;
+  ta.style.cssText='position:fixed;left:-9999px;top:0'; document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  let ok=false; try{ok=document.execCommand('copy')}catch(e){}
+  document.body.removeChild(ta); flash(ok);
+}
+function wire(){
+  document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>{VIEW=b.dataset.nav;render()});
+  document.querySelectorAll('[data-team]').forEach(b=>b.onclick=()=>{TEAMKEY=b.dataset.team;VIEW='team';render()});
+  document.querySelectorAll('[data-av]').forEach(b=>b.onclick=()=>{
+    const[pid,st]=b.dataset.av.split('|'); setAv(GAMEBC,pid,st); render()});
+  document.querySelectorAll('[data-avall]').forEach(b=>b.onclick=()=>{
+    const g=games().find(x=>String(x.bc)===String(GAMEBC)); if(!g)return;
+    const a=S.avail[g.bc]||(S.avail[g.bc]={});
+    team(g.team).players.forEach(p=>a[p.id]='available'); save(); render()});
+  document.querySelectorAll('[data-avclear]').forEach(b=>b.onclick=()=>{
+    delete S.avail[GAMEBC]; save(); render()});
+  document.querySelectorAll('[data-fmt]').forEach(el=>el.onchange=()=>{
+    const g=games().find(x=>String(x.bc)===String(GAMEBC)); if(!g)return;
+    const f={...fmtFor(g)}; f[el.dataset.fmt]=+el.value; S.fmt[g.team]=f; save(); render()});
+  document.querySelectorAll('[data-fmtnum]').forEach(el=>el.onchange=()=>{
+    const g=games().find(x=>String(x.bc)===String(GAMEBC)); if(!g)return;
+    const f={...fmtFor(g)};
+    f[el.dataset.fmtnum]=Math.max(1,Math.min(f.mins,Math.round(+el.value)||1));
+    S.fmt[g.team]=f; save(); render()});
+  document.querySelectorAll('[data-winn]').forEach(el=>el.onchange=()=>{
+    const w=S.win[GAMEBC]||(S.win[GAMEBC]={});
+    w.n=Math.max(0,Math.round(+el.value)||0); save(); render()});
+  document.querySelectorAll('[data-wins]').forEach(el=>el.onchange=()=>{
+    const w=S.win[GAMEBC]||(S.win[GAMEBC]={});
+    w.scen=el.value; save(); render()});
+  document.querySelectorAll('[data-form]').forEach(b=>b.onclick=()=>{
+    const[sc,pid]=b.dataset.form.split('|');
+    const tf=S.forms[TEAMKEY]||(S.forms[TEAMKEY]={});
+    const list=tf[sc]||(tf[sc]=[]);
+    const i=list.indexOf(+pid);
+    if(i>=0)list.splice(i,1); else list.push(+pid);
+    if(!list.length)delete tf[sc];
+    if(!Object.keys(tf).length)delete S.forms[TEAMKEY];
+    save(); render()});
+  document.querySelectorAll('[data-stance]').forEach(el=>el.onchange=()=>{
+    S.stance[GAMEBC]=el.value; save(); render()});
+  document.querySelectorAll('[data-genplan]').forEach(b=>b.onclick=()=>{
+    const g=games().find(x=>String(x.bc)===String(GAMEBC)); if(!g)return;
+    genPlan(g,!!S.plans[g.bc]); render()});
+  document.querySelectorAll('[data-clearplan]').forEach(b=>b.onclick=()=>{
+    delete S.plans[GAMEBC]; save(); render()});
+  document.querySelectorAll('[data-cell]').forEach(td=>td.onclick=()=>{
+    const[bi,id]=td.dataset.cell.split('|'); const p=S.plans[GAMEBC]; if(!p)return;
+    const b=p.blocks[+bi]; const i=b.on.indexOf(id);
+    if(i>=0)b.on.splice(i,1); else b.on.push(id);
+    b.locked=true; recomputeMinutes(p); save(); render()});
+  document.querySelectorAll('[data-blklock]').forEach(th=>th.onclick=()=>{
+    const p=S.plans[GAMEBC]; if(!p)return;
+    const b=p.blocks[+th.dataset.blklock]; b.locked=!b.locked; save(); render()});
+  document.querySelectorAll('[data-fiadd]').forEach(b=>b.onclick=()=>{
+    const g=games().find(x=>String(x.bc)===String(GAMEBC)); if(!g)return;
+    const pick=document.querySelector('[data-fipick]');
+    const typed=$('fiName')?$('fiName').value:'';
+    let err;
+    if(pick&&pick.value){
+      const opt=pick.options[pick.selectedIndex];
+      err=addFillin(g.bc,opt.dataset.name,pick.value);
+    } else err=addFillin(g.bc,typed,null);
+    if(err) NOTE={cls:'err',text:err};
+    render()});
+  document.querySelectorAll('[data-fiw]').forEach(el=>el.onchange=()=>{
+    const list=S.fillins[GAMEBC]; const f=list&&list[+el.dataset.fiw];
+    if(f){f.weight=+el.value; save()} render()});
+  document.querySelectorAll('[data-firm]').forEach(b=>b.onclick=()=>{
+    const list=S.fillins[GAMEBC]; if(!list)return;
+    list.splice(+b.dataset.firm,1);
+    if(!list.length) delete S.fillins[GAMEBC];
+    save(); render()});
+  document.querySelectorAll('[data-duty]').forEach(el=>el.onchange=()=>{
+    setDuty(el.dataset.duty, el.value, el.dataset.dteam); render()});
+  document.querySelectorAll('[data-dlock]').forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const d=S.duty[b.dataset.dlock]; if(!d)return;
+    d.locked=!d.locked; save(); render()});
+  document.querySelectorAll('[data-dgen]').forEach(b=>b.onclick=()=>{
+    const n=genDuty(b.dataset.dgen,false);
+    NOTE={cls:'ok',text:n?('Assigned bench duty for '+n+' game'+(n>1?'s':'')+'.')
+      :'Nothing to assign — every upcoming game already has duty (or the pool is empty).'};
+    render()});
+  document.querySelectorAll('[data-dregen]').forEach(b=>b.onclick=()=>{
+    const n=genDuty(b.dataset.dregen,true);
+    NOTE={cls:'ok',text:'Regenerated — '+n+' assignment'+(n===1?'':'s')+' set; locked and past games untouched.'};
+    render()});
+  document.querySelectorAll('[data-dpool]').forEach(el=>el.onchange=()=>{
+    const tk=el.dataset.dpteam, pid=el.dataset.dpool;
+    if(!S.dutyEx[tk]) S.dutyEx[tk]={};
+    if(el.checked) delete S.dutyEx[tk][pid]; else S.dutyEx[tk][pid]=true;
+    if(!Object.keys(S.dutyEx[tk]).length) delete S.dutyEx[tk];
+    save(); render()});
+  document.querySelectorAll('[data-player]').forEach(el=>el.onclick=()=>{
+    PLAYERID=+el.dataset.player; VIEW='player'; render()});
+  document.querySelectorAll('[data-game]').forEach(el=>el.onclick=()=>{
+    GAMEBC=el.dataset.game; BACKTO=el.dataset.backto||'day'; VIEW='game'; render()});
+  document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{
+    const pre=$('pre-'+b.dataset.copy); if(pre) copyText(pre.textContent,b)});
+  document.querySelectorAll('[data-sent]').forEach(b=>b.onclick=()=>{
+    const g=games().find(x=>String(x.bc)===String(GAMEBC)); if(!g)return;
+    const k=b.dataset.sent, a=S.ann[g.bc]||(S.ann[g.bc]={});
+    if(a[k]) delete a[k]; else a[k]=todayStr();
+    save(); render()});
+  document.querySelectorAll('[data-tplsave]').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.tplsave, v=$('ta-'+k).value;
+    if(!S.templates) S.templates={};
+    if(v===DEFAULT_TPL[k]) delete S.templates[k]; else S.templates[k]=v;
+    if(!Object.keys(S.templates).length) S.templates=null;
+    save(); NOTE={cls:'ok',text:'Template saved.'}; render()});
+  document.querySelectorAll('[data-tplreset]').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.tplreset;
+    if(S.templates){delete S.templates[k]; if(!Object.keys(S.templates).length)S.templates=null}
+    save(); NOTE={cls:'ok',text:'Template reset to the default wording.'}; render()});
+  document.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>{
+    const a=b.dataset.act;
+    if(a==='loadPack') pickFile(importPack);
+    else if(a==='loadFix') pickFile(importFixtures);
+    else if(a==='loadBak') pickFile(importBackup);
+    else if(a==='backup') download('coach-companion-backup-'+todayStr()+'.json',backupFile());
+    else if(a==='back'){VIEW='teams';render()}
+    else if(a==='gback'){VIEW=BACKTO;render()}
+    else if(a==='back2team'){VIEW='team';render()}
+    else if(a==='tback'){VIEW='data';render()}
+    else if(a==='tpl'){VIEW='tpl';render()}
+    else if(a==='dPrev'||a==='dNext'){const ds=gameDays();const i=ds.indexOf(DAY);
+      DAY=ds[a==='dPrev'?i-1:i+1]||DAY;render()}
+    else if(a==='wipe'){
+      if(confirm('Empty the app? The pack, fixtures and ALL your coach state on this device will be removed. Save a backup first — this cannot be undone.')){
+        localStorage.removeItem(K_PACK);localStorage.removeItem(K_FIX);localStorage.removeItem(K_S);
+        PACK=null;FIX=null;S=freshS();DAY=null;VIEW='day';render()}}
+  });
+}
+
+// ---- start -----------------------------------------------------------------------------------
+load(); render();
+// Offline after first load, and ask the browser not to evict this app's storage. Both need a
+// hosted (https) page; on file:// they are skipped and the app runs exactly as before.
+if(HOSTED&&'serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+  if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
+}
+</script>
+</body>
+</html>
