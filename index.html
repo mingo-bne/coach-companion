@@ -209,7 +209,17 @@ function load(){try{
 }catch(e){}
   if(!S) S=freshS();
   for(const k of Object.keys(freshS())) if(!(k in S)) S[k]=freshS()[k];}
-function freshS(){return {v:1, ann:{}, duty:{}, dutyEx:{}, fillins:{}, plans:{}, avail:{}, fmt:{}, stance:{}, forms:{}, win:{}, notes:{}, scores:{}, templates:null}}
+function freshS(){return {v:1, ann:{}, duty:{}, dutyEx:{}, fillins:{}, plans:{}, avail:{}, fmt:{}, stance:{}, forms:{}, win:{}, notes:{}, scores:{}, templates:null, jersey:{}}}
+// ---- jersey corrections (ADR-013, 22 Sep 2026) ---------------------------------------------
+// S.jersey[playerId] = {no, was}. A coach's correction lives on S (D/S separation) and applies
+// AGAINST the pack value it corrected: if a later pack carries a different number, the club has
+// changed it since and the club's number wins — the correction is ignored at render, never pruned.
+function jerseyOf(p){const o=S.jersey&&S.jersey[p.id];
+  if(o&&String(o.was==null?'':o.was)===String(p.jersey==null?'':p.jersey))return o.no;
+  return p.jersey}
+const jerseyTxt=p=>{const j=jerseyOf(p);return j==null||j===''?'—':esc(String(j))};
+const jerseyEdited=p=>{const o=S.jersey&&S.jersey[p.id];
+  return !!(o&&String(o.was==null?'':o.was)===String(p.jersey==null?'':p.jersey))};
 
 // ---- scenario fives + crunch sizing (v0.7) ---------------------------------------------------
 // S.forms[teamKey] = {off:[pids], def:[pids], ctrl:[pids]} — coach-predefined lineups.
@@ -586,12 +596,12 @@ function teamView(){
     +'<h2>Roster</h2><div class="card"><table><tr><th>#</th><th>Player</th><th>Seasons</th></tr>';
   for(const p of [...t.players].sort((a,b)=>a.name.localeCompare(b.name))){
     const hist=(p.card&&p.card.record)?[...new Set(p.card.record.map(r=>r.season))].length:0;
-    h+='<tr class="tap" data-player="'+p.id+'"><td>'+(p.jersey==null?'—':esc(p.jersey))+'</td>'
+    h+='<tr class="tap" data-player="'+p.id+'"><td>'+jerseyTxt(p)+(jerseyEdited(p)?' <span class="tiny" title="corrected here">✎</span>':'')+'</td>'
       +'<td>'+esc(p.name)+'</td>'
       +'<td class="tiny">'+(hist||'—')+'</td></tr>';
   }
   h+='</table><div class="tiny" style="margin-top:8px">Tap a player for their card. '
-    +'Jerseys and records come from the club pack — they are not edited here.</div></div>';
+    +'Records come from the club pack. A jersey number can be corrected on the player card — ✎ marks one that was.</div></div>';
   // ---- bench duty ----
   const dgs=gamesOf(t.key);
   if(dgs.length){
@@ -657,7 +667,12 @@ function playerView(){
     +'<div class="card"><div class="row"><span class="chip" style="background:'+esc(t.color||'#555')+'">'+esc(t.name)+'</span>'
     +'<div class="grow"><b style="font-size:18px">'+esc(p.name)+'</b>'
     +'<div class="tiny">'+esc(t.age_group||'')+' '+esc(t.division||'')
-    +' · Jersey '+(p.jersey==null?'—':esc(p.jersey))+'</div></div></div></div>';
+    +' · Jersey '+jerseyTxt(p)+'</div></div></div></div>'
+    +'<div class="card"><div class="row"><b>Jersey</b> <input data-jersey="'+p.id+'" value="'+(jerseyOf(p)==null?'':esc(String(jerseyOf(p))))+'" '
+    +'inputmode="numeric" style="width:70px;text-align:center" placeholder="—"> '
+    +(jerseyEdited(p)?'<span class="tiny">corrected here — the club pack says '+(p.jersey==null?'—':esc(String(p.jersey)))+'. <button class="quiet" data-jreset="'+p.id+'">Use the pack\'s</button></span>'
+      :'<span class="tiny">from the club pack. Type over it if the number on the shirt is different.</span>')
+    +'</div></div>';
 
   // ---- playing record (from the club pack — TMS is the source of truth) ----
   h+='<h2>Playing record</h2>';
@@ -926,6 +941,14 @@ function wire(){
   document.querySelectorAll('[data-wins]').forEach(el=>el.onchange=()=>{
     const w=S.win[GAMEBC]||(S.win[GAMEBC]={});
     w.scen=el.value; save(); render()});
+  document.querySelectorAll('[data-jersey]').forEach(el=>el.onchange=()=>{
+    const t=team(TEAMKEY), p=t&&t.players.find(x=>String(x.id)===el.dataset.jersey); if(!p)return;
+    const v=el.value.trim(); S.jersey=S.jersey||{};
+    if(v===''||v===String(p.jersey==null?'':p.jersey)) delete S.jersey[p.id];
+    else S.jersey[p.id]={no:v, was:p.jersey==null?'':p.jersey};
+    save(); render();});
+  document.querySelectorAll('[data-jreset]').forEach(b=>b.onclick=()=>{
+    if(S.jersey) delete S.jersey[b.dataset.jreset]; save(); render();});
   document.querySelectorAll('[data-form]').forEach(b=>b.onclick=()=>{
     const[sc,pid]=b.dataset.form.split('|');
     const tf=S.forms[TEAMKEY]||(S.forms[TEAMKEY]={});
