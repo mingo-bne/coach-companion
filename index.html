@@ -536,7 +536,7 @@ function render(){
 function welcome(){
   return '<div class="card"><b>Welcome.</b>'
     +'<p class="tiny">This app runs entirely on this device. It needs two files from the club to start:</p>'
-    +'<p class="tiny"><b>1. The coach pack</b> — your teams, your players, their jersey numbers and playing records. Supplied to you at the start of the season. Never hosted anywhere.</p>'
+    +'<p class="tiny"><b>1. The coach pack</b> — your teams, your players, their jersey numbers, playing records and (when the club includes it) a parent contact each. Supplied to you at the start of the season. Never hosted anywhere.</p>'
     +'<p class="tiny"><b>2. The fixtures file</b> — the season schedule. Re-load it whenever the club issues an update; everything you have entered survives.</p>'
     +'<div class="btnrow"><button class="primary" data-act="loadPack">Load coach pack</button>'
     +'<button data-act="loadFix">Load fixtures</button>'
@@ -673,6 +673,18 @@ function playerView(){
     +(jerseyEdited(p)?'<span class="tiny">corrected here — the club pack says '+(p.jersey==null?'—':esc(String(p.jersey)))+'. <button class="quiet" data-jreset="'+p.id+'">Use the pack\'s</button></span>'
       :'<span class="tiny">from the club pack. Type over it if the number on the shirt is different.</span>')
     +'</div></div>';
+  // ---- parent contact (ADR-014; TMS ADR-033) — in the pack when the club chose to include it ----
+  // Rendered from the pack and never stored anywhere else. tel:/mailto: so a tap calls or writes.
+  const pc=p.contact||{};
+  if(pc.parent||pc.email||pc.mobile){
+    h+='<div class="card"><div class="row"><b>Parent</b><div class="grow">'
+      +(pc.parent?'<div>'+esc(pc.parent)+'</div>':'')
+      +(pc.mobile?'<div><a href="tel:'+esc(String(pc.mobile).replace(/\s+/g,''))+'">'+esc(pc.mobile)+'</a></div>':'')
+      +(pc.email?'<div><a href="mailto:'+esc(pc.email)+'">'+esc(pc.email)+'</a></div>':'')
+      +'</div></div><div class="tiny" style="margin-top:6px">From the club pack \u2014 for team matters only. Ask the club to correct it there.</div></div>';
+  }else{
+    h+='<div class="card tiny">No parent contact in this pack \u2014 the club can include it when it issues the next one.</div>';
+  }
 
   // ---- playing record (from the club pack — TMS is the source of truth) ----
   h+='<h2>Playing record</h2>';
