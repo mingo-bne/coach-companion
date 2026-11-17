@@ -672,11 +672,32 @@ function evPull(g){const m=String(g.bc);if(EVPEND[m])return;EVPEND[m]=1;delete E
     e=>{delete EVPEND[m];EVERR[m]=e.message;afterPull()})}
 // The chart is one inline SVG built from the stored points; own score in the team colour, theirs grey,
 // a dashed line where each period's first basket was logged.
-function progressionSvg(g,ev,col){
+// RUNS (Ming, 18 Nov 2026: "identify on the chart 3+ unanswered plays stretches"): 3 or more scores in a
+// row by one side with nothing from the other. Each score update the scorer logged is one play, so two made
+// free throws are two. A logged correction (a score going down, or both scores changing at once) ends any
+// run rather than being guessed into one. Returns {own, from, to (indexes into ev.pts), n plays, pts, p0, p1}.
+const RUN_MIN=3;
+function progressionRuns(g,ev){const out=[],P=ev.pts;let cur=null,pa=0,pb=0;
+  const close=()=>{if(cur&&cur.n>=RUN_MIN)out.push(cur);cur=null};
+  P.forEach((x,i)=>{const da=x.a-pa,db=x.b-pb;pa=x.a;pb=x.b;
+    if(da<0||db<0||(da&&db)||(!da&&!db)){close();return}
+    const side1=da>0,own=g.home?side1:!side1,pts=side1?da:db;
+    if(cur&&cur.own===own){cur.to=i;cur.n++;cur.pts+=pts;cur.p1=x.p}
+    else{close();cur={own,from:i,to:i,n:1,pts,p0:x.p,p1:x.p}}});
+  close();return out}
+// Chart colours are fixed (Ming, 18 Nov 2026: "citipointe team chart color in navy, opponent team in grey,
+// for all teams") — never the team colour, which can be a split gradient that an SVG line cannot paint.
+const CH_OWN='#1F3A6E', CH_OPP='#9AA0A6';
+function progressionSvg(g,ev){
   const own=x=>g.home?x.a:x.b,opp=x=>g.home?x.b:x.a,pts=ev.pts;
-  const W=360,H=190,L=26,R=6,T=8,B=20,t0=pts[0].ts,t1=pts[pts.length-1].ts,span=Math.max(1,t1-t0);
+  const W=360,L=26,R=6,B=20,PH=162,t0=pts[0].ts,t1=pts[pts.length-1].ts,span=Math.max(1,t1-t0);
   const top=Math.max(4,...pts.map(own),...pts.map(opp));
-  const X=ts=>L+(W-L-R)*(ts-t0)/span,Y=v=>T+(H-T-B)*(1-v/top);
+  const X=ts=>L+(W-L-R)*(ts-t0)/span;
+  // Run labels sit in a strip ABOVE the plot, never on the lines: a label within 26 units of the previous one
+  // on its row drops to the next row, and the strip is as tall as the rows used.
+  const runs=progressionRuns(g,ev),rowEnd=[],lab=runs.map(r=>{const x0=X(pts[r.from].ts)-3,x1=X(pts[r.to].ts)+3,cx=(x0+x1)/2;
+    let row=0;while(rowEnd[row]!=null&&cx-rowEnd[row]<26)row++;rowEnd[row]=cx;return{r,x0,x1,cx,row}});
+  const T=8+11*rowEnd.length,H=T+PH+B,Y=v=>T+PH*(1-v/top);
   const step=f=>{let d='M'+X(t0).toFixed(1)+' '+Y(0).toFixed(1),last=0;
     pts.forEach(x=>{const v=f(x);d+=' L'+X(x.ts).toFixed(1)+' '+Y(last).toFixed(1)+' L'+X(x.ts).toFixed(1)+' '+Y(v).toFixed(1);last=v});return d};
   let grid='';const gs=top<=20?5:(top<=50?10:20);
@@ -685,9 +706,12 @@ function progressionSvg(g,ev,col){
   let per='';const seen={};pts.forEach(x=>{if(!seen[x.p]){seen[x.p]=1;const px=X(x.ts).toFixed(1);
     per+=(x.ts>t0?'<line x1="'+px+'" x2="'+px+'" y1="'+T+'" y2="'+(H-B)+'" stroke="var(--sub)" stroke-dasharray="3 3"/>':'')
       +'<text x="'+(+px+3)+'" y="'+(H-6)+'" font-size="10" fill="var(--sub)">'+(x.p?'P'+x.p:'')+'</text>'}});
-  return '<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="Score through the game">'+grid+per
-    +'<path d="'+step(opp)+'" fill="none" stroke="#9AA0A6" stroke-width="2"/>'
-    +'<path d="'+step(own)+'" fill="none" stroke="'+esc(col)+'" stroke-width="2.5"/></svg>'}
+  let bands='';lab.forEach(({r,x0,x1,cx,row})=>{const c=r.own?CH_OWN:CH_OPP;
+    bands+='<rect class="run" x="'+x0.toFixed(1)+'" y="'+T+'" width="'+(x1-x0).toFixed(1)+'" height="'+PH+'" fill="'+esc(c)+'" fill-opacity="0.16"/>'
+      +'<text x="'+cx.toFixed(1)+'" y="'+(16+row*11)+'" font-size="10" font-weight="700" text-anchor="middle" fill="'+esc(c)+'">'+r.pts+'–0</text>'});
+  return '<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="Score through the game">'+grid+bands+per
+    +'<path d="'+step(opp)+'" fill="none" stroke="'+CH_OPP+'" stroke-width="2"/>'
+    +'<path d="'+step(own)+'" fill="none" stroke="'+CH_OWN+'" stroke-width="2.5"/></svg>'}
 // Facts read off the same points: largest lead each way, lead changes, and whether the log reaches the final.
 function progressionFacts(g,ev){const own=x=>g.home?x.a:x.b,opp=x=>g.home?x.b:x.a;
   let us=0,them=0,ch=0,lead=0;ev.pts.forEach(x=>{const d=own(x)-opp(x);if(d>us)us=d;if(-d>them)them=-d;
@@ -1138,12 +1162,16 @@ function liveGameSections(g,t){
     // progression
     const m=String(g.bc),ev=LIVE.ev&&LIVE.ev[m];
     h+='<h2>Game progression</h2><div class="card">';
-    if(ev&&ev.pts&&ev.pts.length>1){const f=progressionFacts(g,ev),col=t.color||'#1E3A5F';
-      h+=progressionSvg(g,ev,col)
-        +'<div class="tiny"><span class="key" style="background:'+esc(col)+'"></span>'+esc(t.name)
-        +'<span class="key" style="background:#9AA0A6"></span>'+esc(g.opponent||'Opponent')+'</div>'
+    if(ev&&ev.pts&&ev.pts.length>1){const f=progressionFacts(g,ev);
+      h+=progressionSvg(g,ev)
+        +'<div class="tiny"><span class="key" style="background:'+CH_OWN+'"></span>'+esc(t.name)
+        +'<span class="key" style="background:'+CH_OPP+'"></span>'+esc(g.opponent||'Opponent')+'</div>'
         +'<div class="tiny" style="margin-top:6px">Largest lead: '+esc(t.name)+' '+f.us+', '+esc(g.opponent||'them')+' '+f.them
         +' · lead changes: '+f.ch+'.'+(f.matches?'':' The scorer\'s log ends at '+esc(f.end)+', not the recorded final.')+'</div>'
+        +(()=>{const rs=progressionRuns(g,ev);
+          return '<div class="tiny" style="margin-top:4px"><b style="color:var(--ink)">Runs of '+RUN_MIN+'+ unanswered scores</b> (shaded): '
+            +(rs.length?rs.map(r=>esc(r.own?t.name:(g.opponent||'Opponent'))+' '+r.pts+'–0 in '+(r.p0===r.p1?'P'+r.p0:'P'+r.p0+'→P'+r.p1)+' ('+r.n+' scores)').join(' · '):'none')
+            +'. Each basket or free throw the scorer logged counts as one score.</div>'})()
         +'<div class="tiny" style="margin-top:4px">Timed by when the scorer tapped each basket, not the game clock — where the scorer fell behind, baskets bunch together.</div>';
     }else if(ev) h+='<div class="tiny">Basketball Connect has no scoring log for this game.</div>';
     else if(EVERR[m]) h+='<div class="tiny">The scoring log could not be pulled ('+esc(EVERR[m])+').</div><div class="btnrow"><button data-evpull="'+esc(m)+'">Try again</button></div>';
