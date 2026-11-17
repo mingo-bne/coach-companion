@@ -95,6 +95,9 @@ select{font:14px var(--font);border:1px solid var(--line);border-radius:8px;padd
 .msg.ok{background:#E8F3EB;color:var(--good)}
 .foot{margin:24px 4px;font-size:12px;color:var(--sub);line-height:1.6}
 input[type=file]{display:none}
+.livebar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 2px 10px;flex-wrap:wrap}
+.flag{font-size:12px;color:var(--bad);margin-top:6px}
+.key{display:inline-block;width:14px;height:3px;vertical-align:middle;margin:0 4px 0 10px}
 .teamgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .teamtile{border:none;text-align:left;color:#fff;border-radius:var(--radius);padding:14px;min-height:84px}
 .teamtile b{font-size:16px;display:block}
@@ -103,13 +106,14 @@ input[type=file]{display:none}
 </style>
 </head>
 <body>
-<header><b>Coach Companion</b><div class="sub" id="hSub">v0.8</div></header>
+<header><b>Coach Companion</b><div class="sub" id="hSub">v0.11</div></header>
 <main id="main"></main>
 <nav id="nav"></nav>
 
 <script>
 /* ============================================================================================
-   Coach Companion v0.8 — all game-week modules; PWA wiring (ADR-012): hosted = phone app, file:// = desktop test build.
+   Coach Companion v0.11 — all game-week modules; PWA wiring (ADR-012): hosted = phone app, file:// = desktop test build;
+   live draw, results, ladder, box scores and opponent read from Basketball Connect (ADR-015).
    Invariants (see CLAUDE.md): D/S separation; BC ids are identity; contracts refuse with a
    reason and never half-load; no live-game features. All game-week modules are live; the
    play-to-win stance activates fully once the club pack carries coach assessments.
@@ -120,12 +124,13 @@ input[type=file]{display:none}
 const PACK_KIND='coach.pack', FIX_KIND='coach.fixtures', BAK_KIND='coach.backup', CONTRACT_V=1;
 // Hosted (https) = the phone app; file:// = the desktop test build. One file serves both.
 const HOSTED=/^https?:$/.test(location.protocol);
-const APPVER='v0.8'+(HOSTED?'':' — desktop test build');
-const K_PACK='cc.d.pack', K_FIX='cc.d.fixtures', K_S='cc.s';
+const APPVER='v0.11'+(HOSTED?'':' — desktop test build');
+const K_PACK='cc.d.pack', K_FIX='cc.d.fixtures', K_S='cc.s', K_LIVE='cc.d.live';
 
 // ---- state -----------------------------------------------------------------------------------
 let PACK=null;      // D: coach pack (replaced wholesale on import)
 let FIX=null;       // D: fixtures  (replaced wholesale on import/sync)
+let LIVE=null;      // D: what the last pull from Basketball Connect returned (ADR-015) — a cache, replaced by each pull
 let S=null;         // coach state — survives every import
 let VIEW='day';     // day | teams | team | data | game | tpl
 let TEAMKEY=null;   // selected team in team view
@@ -200,16 +205,18 @@ const niceDate=iso=>{const[y,m,d]=iso.split('-').map(Number);
 function save(){try{
   PACK?localStorage.setItem(K_PACK,JSON.stringify(PACK)):localStorage.removeItem(K_PACK);
   FIX ?localStorage.setItem(K_FIX ,JSON.stringify(FIX)) :localStorage.removeItem(K_FIX);
+  LIVE?localStorage.setItem(K_LIVE,JSON.stringify(LIVE)):localStorage.removeItem(K_LIVE);
   localStorage.setItem(K_S,JSON.stringify(S));
 }catch(e){NOTE={cls:'err',text:'Could not write to storage: '+e.message}}}
 function load(){try{
   PACK=JSON.parse(localStorage.getItem(K_PACK)||'null');
   FIX =JSON.parse(localStorage.getItem(K_FIX) ||'null');
+  LIVE=JSON.parse(localStorage.getItem(K_LIVE)||'null');
   S   =JSON.parse(localStorage.getItem(K_S)   ||'null');
 }catch(e){}
   if(!S) S=freshS();
   for(const k of Object.keys(freshS())) if(!(k in S)) S[k]=freshS()[k];}
-function freshS(){return {v:1, ann:{}, duty:{}, dutyEx:{}, fillins:{}, plans:{}, avail:{}, fmt:{}, stance:{}, forms:{}, win:{}, notes:{}, scores:{}, templates:null, jersey:{}}}
+function freshS(){return {v:1, ann:{}, duty:{}, dutyEx:{}, fillins:{}, plans:{}, avail:{}, fmt:{}, stance:{}, forms:{}, win:{}, notes:{}, scores:{}, templates:null, jersey:{}, bcComps:''}}
 // ---- jersey corrections (ADR-013, 22 Sep 2026) ---------------------------------------------
 // S.jersey[playerId] = {no, was}. A coach's correction lives on S (D/S separation) and applies
 // AGAINST the pack value it corrected: if a later pack carries a different number, the club has
@@ -465,7 +472,7 @@ function importPack(txt){const r=readPack(txt);
   if(r.err){NOTE={cls:'err',text:r.err}}
   else{PACK=r.o; NOTE={cls:'ok',text:'Coach pack loaded — '+PACK.teams.length+' team'+(PACK.teams.length>1?'s':'')
     +', '+PACK.teams.reduce((n,t)=>n+t.players.length,0)+' players ('+esc(PACK.season||'')+', published '+esc(PACK.published||'?')+').'};
-    save()} render();}
+    save(); if(compList().length&&navigator.onLine!==false) setTimeout(()=>livePull(true),0)} render();}
 function importFixtures(txt){const r=readFixtures(txt);
   if(r.err){NOTE={cls:'err',text:r.err}}
   else{
@@ -502,10 +509,230 @@ function backupFile(){
   return JSON.stringify({kind:BAK_KIND,v:CONTRACT_V,written:todayStr(),s:S},null,1);
 }
 
+// ---- live pull from Basketball Connect (ADR-015, 17 Nov 2026) --------------------------------
+// The draw, results, ladder and per-game points come from Basketball Connect's public live-score
+// service — the same calls its own fixture pages make, no login. The COACH PACK stays the source of
+// names, jerseys and contacts (ADR-012 whitelist); a request carries only competition, division and
+// team numbers, never anything about a child. What comes back is D: a cache in LIVE (own storage key),
+// replaced by each pull, never in a backup, its age always on screen. The fixtures FILE stays as the
+// fallback for any team the pull cannot reach.
+// Only the fields named below are kept from an answer: the service also returns registration status,
+// expiry and product names, which this app has no business holding.
+const BCAPI='https://api-basketball.squadi.com';
+let PULLING=false, LIVEMSG='';
+function bcGet(path){
+  const ctl=typeof AbortController==='function'?new AbortController():null;
+  const tm=ctl?setTimeout(()=>ctl.abort(),45000):0;
+  return fetch(BCAPI+path,{headers:{Accept:'application/json'},signal:ctl?ctl.signal:undefined})
+    .then(r=>{clearTimeout(tm);if(!r.ok)throw new Error('Basketball Connect answered '+r.status);return r.json()},
+          e=>{clearTimeout(tm);throw new Error(e&&e.name==='AbortError'?'no answer within 45 s':'could not reach Basketball Connect')});
+}
+// "2869, 2467" or a pasted fixture link (…competitionId=2869…) -> [2869, 2467]. Same rule as the Team Manager.
+function compIdsOf(txt){const s=String(txt||''),out=[];
+  const re=/competitionId=(\d+)/gi;let m;while((m=re.exec(s)))out.push(+m[1]);
+  if(!out.length)(s.match(/\d{3,6}/g)||[]).forEach(x=>out.push(+x));
+  return out.filter((x,i)=>out.indexOf(x)===i)}
+const compText=()=>String(S.bcComps||'').trim();          // typed here; wins when present
+const packComps=()=>PACK&&Array.isArray(PACK.bc_comps)?PACK.bc_comps.map(Number).filter(n=>n>0):[];
+const compList=()=>{const t=compIdsOf(compText());return t.length?t:packComps()};
+const nameKey=v=>String(v||'').replace(/\s+/g,' ').trim().toLowerCase();
+// The names a pack team can carry in Basketball Connect, in the order they are tried: the BC name the
+// Team Manager sends (bc_name), its full name, then the inverse of the Team Manager's short form —
+// "B14 Navy" was cut from "B14 Citipointe Navy" by removing the club name, so the club name goes back
+// after the age group. Tried for an exact match only; a team none of them finds is reported, never guessed.
+function bcNamesOf(t){const out=[],add=v=>{v=nameKey(v);if(v&&out.indexOf(v)<0)out.push(v)};
+  add(t.bc_name);add(t.full_name);
+  if(PACK&&PACK.club&&/^\S+\s+\S/.test(String(t.name||'')))add(String(t.name).replace(/^(\S+)\s+/,'$1 '+PACK.club+' '));
+  return out}
+const BNE=(typeof Intl==='object')?new Intl.DateTimeFormat('en-AU',{timeZone:'Australia/Brisbane',year:'numeric',
+  month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}):null;
+function bneDT(iso){const p={};if(!iso||!BNE)return{d:'',t:''};
+  try{BNE.formatToParts(new Date(iso)).forEach(x=>p[x.type]=x.value)}catch(e){return{d:'',t:''}}
+  return{d:p.year+'-'+p.month+'-'+p.day,t:(p.hour==='24'?'00':p.hour)+':'+p.minute}}
+const roundOf=v=>{const t=String(v||'').trim(),m=/^Round\s+(\d+)$/i.exec(t);return m?+m[1]:t};
+const RES={1:'W',2:'L',3:'D',4:'FW',5:'FL',6:'FL',8:'abandoned',9:'abandoned'};
+const FORM={WON:'W',LOST:'L',DRAW:'D',BYE:'B'};
+const isBye=m=>!m.team1Id||!m.team2Id||m.team1Id===1||m.team2Id===1||m.team1ResultId===7;
+// One team's games from its filtered draw, in the fixtures-file shape (plus result, scores, ids).
+function liveGames(fx,tid,key){const out=[];
+  ((fx&&fx.rounds)||[]).forEach(r=>(r.matches||[]).forEach(m=>{
+    if(isBye(m)||(m.team1Id!==tid&&m.team2Id!==tid))return;
+    const home=m.team1Id===tid,o=home?m.team2:m.team1,dt=bneDT(m.startTime),vc=m.venueCourt||{};
+    const st=m.matchStatus==='ENDED'?'played':(m.matchStatus?'live':'scheduled');
+    const g={team:key,round:roundOf((m.round&&m.round.name)||r.name),date:dt.d,time:dt.t,
+      opponent:(o&&o.name)||'TBC',venue:(vc.venue&&vc.venue.name)||'',court:vc.name||'',
+      bc:String(m.id),status:st,live:true,home:home,opp_id:home?m.team2Id:m.team1Id,div:m.divisionId||r.divisionId||null,
+      div_name:(r.division&&r.division.name)||''};
+    if(st==='played'){g.result=RES[home?m.team1ResultId:m.team2ResultId]||'';
+      g.own_score=home?m.team1Score:m.team2Score;g.opp_score=home?m.team2Score:m.team1Score}
+    if(g.date)out.push(g)}));
+  return out.sort((a,b)=>a.date===b.date?String(a.time).localeCompare(String(b.time)):a.date<b.date?-1:1)}
+const keepRow=r=>{const u=parseInt(r.userId,10),hid=!!(+r.isHidden)||!(u>0);
+  return{m:String(r.matchId),u:hid?null:String(u),pid:r.playerId==null?null:String(r.playerId),
+    shirt:r.shirt==null?'':String(r.shirt),name:hid?'':(String(r.firstName||'')+' '+String(r.lastName||'')).trim(),
+    hid:hid,team:r.teamId==null?null:+r.teamId,from:(r.actualPlayerTeamId!=null&&+r.actualPlayerTeamId!==+r.teamId)?+r.actualPlayerTeamId:null,
+    g:+r.totalMatches||0,pts:+r.totalPts||0,p2:+r['2PMade']||0,p3:+r['3PMade']||0,ft:+r.FTMade||0,
+    pf:+r.PF||0,tf:+r.TF||0,df:+r.DF||0,uf:+r.UF||0}};
+const ladderOf=lad=>{const form={};((lad&&lad.lastResults)||[]).forEach(t=>{
+    form[t.teamId]=(t.last5||[]).map(x=>FORM[x.code]||String(x.code||'?').charAt(0))});
+  return((lad&&lad.ladders)||[]).map(e=>({id:+e.id,name:e.name||'',rk:+e.rk||0,P:+e.P||0,W:+e.W||0,L:+e.L||0,
+    D:+e.D||0,PTS:+e.PTS||0,F:+e.F||0,A:+e.A||0,form:form[e.id]||[]})).sort((a,b)=>a.rk-b.rk)};
+const scoringPath=(comp,tid,agg)=>'/livescores/stats/public/v2/scoringByPlayer?competitionId='+comp
+  +'&sportRefId=2&search=&aggregate='+agg+'&offset=&limit=&userId=&matchId=&period=&teamId='+tid;
+// An opponent's scorers this season, reduced: shirt, the name Basketball Connect publishes, games, points.
+function oppFetch(comp,oid){return bcGet(scoringPath(comp,oid,'ALL')).then(a=>{
+  const rows=(Array.isArray(a)?a:[]).map(keepRow);
+  return{at:new Date().toISOString(),comp:comp,
+    top:rows.filter(r=>r.pts>0).sort((x,y)=>y.pts-x.pts||y.g-x.g).slice(0,3)
+      .map(r=>({shirt:r.shirt,name:r.name,hid:r.hid,g:r.g,pts:r.pts})),hidden:rows.filter(r=>r.hid).length}})}
+const nextGameOf=gs=>gs.find(g=>g.status==='scheduled')||null;
+function livePull(quiet){
+  if(PULLING||!PACK)return Promise.resolve(false);
+  const comps=compList();
+  if(!comps.length){LIVEMSG='No competition number yet — add it under Data → Basketball Connect.';
+    if(!quiet)NOTE={cls:'err',text:LIVEMSG};afterPull();return Promise.resolve(false)}
+  PULLING=true;LIVEMSG='Asking Basketball Connect…';afterPull();
+  const prev=LIVE||{},sameComps=JSON.stringify(prev.comps||[])===JSON.stringify(comps);
+  // Team ids and competition keys do not change within a competition, so they are carried between
+  // pulls and the whole-competition draw (several MB) is fetched only for a team not yet found.
+  const ids=sameComps?Object.assign({},prev.ids||{}):{},keys=Object.assign({},prev.keys||{});
+  const out={v:1,at:null,comps:comps,ids:ids,keys:keys,teams:{},opp:{},notes:[]};
+  const findId=t=>{for(const c of comps)for(const n of bcNamesOf(t)){const v=ids[c+'|'+n];if(v)return{id:v,comp:c}}return null};
+  let chain=Promise.resolve();
+  comps.forEach(c=>{chain=chain.then(()=>{
+    if(!teams().some(t=>!findId(t)))return;
+    return bcGet('/livescores/round/matches?competitionId='+c+'&divisionId=&teamIds=&ignoreStatuses=%5B1%5D').then(fx=>{
+      const want={};teams().forEach(t=>bcNamesOf(t).forEach(n=>want[n]=1));
+      ((fx&&fx.rounds)||[]).forEach(r=>(r.matches||[]).forEach(m=>[[m.team1,m.team1Id],[m.team2,m.team2Id]].forEach(p=>{
+        const n=p[0]&&nameKey(p[0].name);if(n&&p[1]&&want[n])ids[c+'|'+n]=p[1]})))},
+      e=>{out.notes.push('Competition '+c+': the full draw could not be read ('+e.message+').')})})});
+  return chain.then(()=>Promise.all(teams().map(t=>{
+    const f=findId(t),old=prev.teams&&prev.teams[t.key];
+    if(!f){out.teams[t.key]={err:out.notes.length?out.notes.join(' '):('not found in competition '+comps.join(', ')+' under '+(bcNamesOf(t).join(' / ')||'no name'))};return null}
+    const kp=keys[f.comp]?Promise.resolve(keys[f.comp])
+      :bcGet('/livescores/division?competitionId='+f.comp).then(a=>{const k=Array.isArray(a)&&a[0]&&a[0].competition&&a[0].competition.uniqueKey;
+        if(k)keys[f.comp]=k;return k||null},()=>null);
+    return Promise.all([bcGet('/livescores/round/matches?competitionId='+f.comp+'&divisionId=&teamIds=%5B'+f.id+'%5D&ignoreStatuses=%5B1%5D'),
+      bcGet(scoringPath(f.comp,f.id,'MATCH')),kp]).then(a=>{
+      const gs=liveGames(a[0],f.id,t.key),sc=(Array.isArray(a[1])?a[1]:[]).map(keepRow);
+      // the division a team is in NOW: its next game's, else its latest (grading moves teams)
+      const ng=nextGameOf(gs),cur=ng?ng.div:(gs.length?gs[gs.length-1].div:null);
+      const rec={id:f.id,comp:f.comp,at:new Date().toISOString(),games:gs,scoring:sc,div:cur,
+        div_name:ng?ng.div_name:(gs.length?gs[gs.length-1].div_name:''),ladder:null};
+      const lp=(cur&&a[2])?bcGet('/livescores/teams/ladder/v2?divisionIds='+cur+'&competitionKey='+a[2]+'&showForm=1')
+        .then(l=>{rec.ladder=ladderOf(l)},e=>{rec.ladderErr=e.message}):Promise.resolve();
+      return lp.then(()=>{
+        // Today's ladder spot goes on games NOT YET PLAYED, and only when both teams are in that ladder —
+        // a position means nothing across two divisions. Crunch sizing (ADR-010) reads these.
+        const L=rec.ladder||[],me=L.find(x=>x.id===f.id);
+        gs.forEach(g=>{if(g.status!=='scheduled'||!me)return;const o=L.find(x=>x.id===g.opp_id);
+          if(o){g.own_rank=me.rk;g.opp_rank=o.rk}});
+        out.teams[t.key]=rec;
+        if(ng&&ng.opp_id)return oppFetch(f.comp,ng.opp_id).then(o=>{out.opp[ng.opp_id]=o},()=>{})})},
+      e=>{ // this team failed: keep what the last pull had for it, and say so
+        if(old&&old.games)out.teams[t.key]=Object.assign({},old,{stale:e.message});
+        else out.teams[t.key]={err:e.message}})}))).then(()=>{
+    // keep cached opponent reads only for opponents still on someone's list
+    const opps={};Object.values(out.teams).forEach(r=>(r.games||[]).forEach(g=>{if(g.opp_id)opps[g.opp_id]=1}));
+    Object.keys(prev.opp||{}).forEach(k=>{if(opps[k]&&!out.opp[k])out.opp[k]=prev.opp[k]});
+    const mids={};Object.values(out.teams).forEach(r=>(r.games||[]).forEach(g=>{if(g.status==='played')mids[g.bc]=1}));
+    out.ev={};Object.keys(prev.ev||{}).forEach(k=>{if(mids[k])out.ev[k]=prev.ev[k]});
+    const okN=Object.values(out.teams).filter(r=>r.games&&!r.stale).length;
+    if(!okN&&prev.teams){ // nothing came back: the last pull stands, untouched
+      PULLING=false;LIVEMSG='Basketball Connect could not be reached — showing the last pull. '+(out.notes[0]||'');
+      if(!quiet)NOTE={cls:'err',text:LIVEMSG};afterPull();return false}
+    out.at=new Date().toISOString();LIVE=out;save();PULLING=false;
+    const bad=Object.keys(out.teams).filter(k=>out.teams[k].err||out.teams[k].stale);
+    LIVEMSG=bad.length?(bad.length+' of '+teams().length+' team'+(teams().length>1?'s':'')+' could not be pulled — see Data.'):'';
+    if(!quiet)NOTE={cls:bad.length?'err':'ok',text:bad.length?LIVEMSG:'Pulled from Basketball Connect — '+okN+' team'+(okN>1?'s':'')+'.'};
+    afterPull();return true}).catch(e=>{PULLING=false;LIVEMSG='Pull failed: '+e.message;
+      if(!quiet)NOTE={cls:'err',text:LIVEMSG};afterPull();return false});
+}
+// Re-render destroys the field being typed into (trap): if the coach is typing when a pull lands,
+// only the status line is patched and the screen catches up on the next render.
+function afterPull(){const a=document.activeElement;
+  if(a&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)){const lb=$('livebar');if(lb)lb.innerHTML=liveBarInner();return}
+  render()}
+function oppPull(g){const L=liveTeam(g.team);if(!L||!g.opp_id)return;
+  PULLING=true;afterPull();
+  oppFetch(L.comp,g.opp_id).then(o=>{LIVE.opp=LIVE.opp||{};LIVE.opp[g.opp_id]=o;PULLING=false;save();afterPull()},
+    e=>{PULLING=false;NOTE={cls:'err',text:'Their scorers could not be pulled: '+e.message};afterPull()})}
+// ---- game progression (17 Nov 2026, Ming: "I also want the game progression chart with box score") ----
+// matchEvents is the scorer's log. Only its SCORE updates are kept — the running team1/team2 score after
+// each basket, the period and the tap time — so no player name from the log is ever stored. Fetched once
+// per played game when its screen is opened, kept in LIVE.ev (D), carried between pulls while listed.
+// The times are when the scorer TAPPED, not the game clock: a scorer who falls behind bunches baskets.
+let EVPEND={},EVERR={};
+function evPull(g){const m=String(g.bc);if(EVPEND[m])return;EVPEND[m]=1;delete EVERR[m];
+  bcGet('/livescores/matches/public/matchEvents?matchId='+encodeURIComponent(m)).then(a=>{
+    const pts=(Array.isArray(a)?a:[]).filter(e=>e&&e.eventCategory==='score'&&e.attribute1Key==='team1Score'&&e.attribute2Key==='team2Score')
+      .map(e=>({ts:Date.parse(e.eventTimestamp),p:+e.period||0,a:+e.attribute1Value||0,b:+e.attribute2Value||0}))
+      .filter(x=>x.ts>0).sort((x,y)=>x.ts-y.ts);
+    LIVE.ev=LIVE.ev||{};LIVE.ev[m]={at:new Date().toISOString(),pts:pts};delete EVPEND[m];save();afterPull()},
+    e=>{delete EVPEND[m];EVERR[m]=e.message;afterPull()})}
+// The chart is one inline SVG built from the stored points; own score in the team colour, theirs grey,
+// a dashed line where each period's first basket was logged.
+function progressionSvg(g,ev,col){
+  const own=x=>g.home?x.a:x.b,opp=x=>g.home?x.b:x.a,pts=ev.pts;
+  const W=360,H=190,L=26,R=6,T=8,B=20,t0=pts[0].ts,t1=pts[pts.length-1].ts,span=Math.max(1,t1-t0);
+  const top=Math.max(4,...pts.map(own),...pts.map(opp));
+  const X=ts=>L+(W-L-R)*(ts-t0)/span,Y=v=>T+(H-T-B)*(1-v/top);
+  const step=f=>{let d='M'+X(t0).toFixed(1)+' '+Y(0).toFixed(1),last=0;
+    pts.forEach(x=>{const v=f(x);d+=' L'+X(x.ts).toFixed(1)+' '+Y(last).toFixed(1)+' L'+X(x.ts).toFixed(1)+' '+Y(v).toFixed(1);last=v});return d};
+  let grid='';const gs=top<=20?5:(top<=50?10:20);
+  for(let v=0;v<=top;v+=gs)grid+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+Y(v).toFixed(1)+'" y2="'+Y(v).toFixed(1)+'" stroke="var(--line)"/>'
+    +'<text x="'+(L-4)+'" y="'+(Y(v)+4).toFixed(1)+'" font-size="10" text-anchor="end" fill="var(--sub)">'+v+'</text>';
+  let per='';const seen={};pts.forEach(x=>{if(!seen[x.p]){seen[x.p]=1;const px=X(x.ts).toFixed(1);
+    per+=(x.ts>t0?'<line x1="'+px+'" x2="'+px+'" y1="'+T+'" y2="'+(H-B)+'" stroke="var(--sub)" stroke-dasharray="3 3"/>':'')
+      +'<text x="'+(+px+3)+'" y="'+(H-6)+'" font-size="10" fill="var(--sub)">'+(x.p?'P'+x.p:'')+'</text>'}});
+  return '<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="Score through the game">'+grid+per
+    +'<path d="'+step(opp)+'" fill="none" stroke="#9AA0A6" stroke-width="2"/>'
+    +'<path d="'+step(own)+'" fill="none" stroke="'+esc(col)+'" stroke-width="2.5"/></svg>'}
+// Facts read off the same points: largest lead each way, lead changes, and whether the log reaches the final.
+function progressionFacts(g,ev){const own=x=>g.home?x.a:x.b,opp=x=>g.home?x.b:x.a;
+  let us=0,them=0,ch=0,lead=0;ev.pts.forEach(x=>{const d=own(x)-opp(x);if(d>us)us=d;if(-d>them)them=-d;
+    const s=Math.sign(d);if(s&&lead&&s!==lead)ch++;if(s)lead=s});
+  const last=ev.pts[ev.pts.length-1];
+  return{us,them,ch,end:own(last)+'–'+opp(last),matches:g.own_score==null||(own(last)===+g.own_score&&opp(last)===+g.opp_score)}}
+const liveTeam=k=>(LIVE&&LIVE.teams&&LIVE.teams[k]&&LIVE.teams[k].games)?LIVE.teams[k]:null;
+const liveGamesOf=k=>{const L=liveTeam(k);return L&&L.games.length?L.games:null};
+// every Basketball Connect id a pack player can appear under: their id, plus any the club sends in `bc`
+const idsOf=p=>new Set([String(p.id)].concat(Array.isArray(p.bc)?p.bc.map(String):[]));
+function packWho(uid){for(const t of teams())for(const p of t.players)if(idsOf(p).has(uid))return{p,t};return null}
+function ago(iso){const m=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  if(!(m>=0))return 'just now';if(m<1)return 'just now';if(m<60)return m+' min ago';
+  const h=Math.round(m/60);if(h<36)return h+' h ago';return Math.round(h/24)+' days ago'}
+function liveBarInner(){
+  if(PULLING)return '<span class="tiny">Asking Basketball Connect…</span>';
+  const c=compList();
+  let t=LIVE&&LIVE.at?'Live from Basketball Connect · pulled '+esc(ago(LIVE.at))
+    :(c.length?'Not pulled from Basketball Connect yet':'Fixtures from the club file. Add your competition number under Data to pull them live.');
+  if(LIVEMSG)t+='<div style="color:var(--bad)">'+esc(LIVEMSG)+'</div>';
+  return '<span class="tiny">'+t+'</span>'+(c.length?' <button class="quiet" data-act="pull">Pull now</button>':'')}
+const resultTxt=g=>{if(g.status==='live')return 'In progress';if(g.status!=='played'||!g.result)return '';
+  if(g.result==='abandoned')return 'Abandoned';
+  if(g.result==='FW'||g.result==='FL')return g.result==='FW'?'Forfeit win':'Forfeit loss';
+  return g.result+' '+g.own_score+'–'+g.opp_score};
+const resultChip=g=>{const t=resultTxt(g);if(!t)return '';
+  const c=g.result==='W'||g.result==='FW'?'var(--good)':(g.result==='L'||g.result==='FL'?'var(--bad)':'var(--sub)');
+  return ' <span class="chip" style="background:'+c+'">'+esc(t)+'</span>'};
+
 // ---- derived ---------------------------------------------------------------------------------
 const teams=()=>PACK?PACK.teams:[];
 const team=k=>teams().find(t=>t.key===k)||null;
-const games=()=>FIX?FIX.games.filter(g=>!PACK||team(g.team)):[];
+// A team the last pull reached shows Basketball Connect's draw; any other team shows the fixtures file.
+// A file game the draw no longer has, dated inside the draw's season, is SHOWN and flagged rather than
+// dropped (fixture sync never auto-deletes); file games from before the draw's first game are an
+// earlier season and stay out of the way. Entries are keyed by BC match id, so they follow the game.
+function games(){
+  const fixG=FIX?FIX.games.filter(g=>!PACK||team(g.team)):[];
+  if(!PACK)return fixG;
+  const out=[],liveK={};
+  teams().forEach(t=>{const lg=liveGamesOf(t.key);if(lg){liveK[t.key]=lg;lg.forEach(g=>out.push(g))}});
+  fixG.forEach(g=>{const lg=liveK[g.team];if(!lg){out.push(g);return}
+    if(lg.some(x=>String(x.bc)===String(g.bc)))return;
+    if(g.date>=lg[0].date)out.push(Object.assign({},g,{gone:true}))});
+  return out}
 const gamesOf=k=>games().filter(g=>g.team===k).sort((a,b)=>a.date===b.date?String(a.time).localeCompare(String(b.time)):a.date<b.date?-1:1);
 const gameDays=()=>[...new Set(games().map(g=>g.date))].sort();
 function defaultDay(){const ds=gameDays(); if(!ds.length)return null;
@@ -537,7 +764,7 @@ function welcome(){
   return '<div class="card"><b>Welcome.</b>'
     +'<p class="tiny">This app runs entirely on this device. It needs two files from the club to start:</p>'
     +'<p class="tiny"><b>1. The coach pack</b> — your teams, your players, their jersey numbers, playing records and (when the club includes it) a parent contact each. Supplied to you at the start of the season. Never hosted anywhere.</p>'
-    +'<p class="tiny"><b>2. The fixtures file</b> — the season schedule. Re-load it whenever the club issues an update; everything you have entered survives.</p>'
+    +'<p class="tiny"><b>2. The fixtures</b> — pulled from Basketball Connect once your competition number is set (the club pack may already carry it), or a fixtures file from the club. Everything you enter survives every update.</p>'
     +'<div class="btnrow"><button class="primary" data-act="loadPack">Load coach pack</button>'
     +'<button data-act="loadFix">Load fixtures</button>'
     +'<button class="quiet" data-act="loadBak">Restore a backup</button></div></div>';
@@ -546,13 +773,15 @@ function welcome(){
 function daySheet(){
   if(!DAY) DAY=defaultDay();
   const ds=gameDays();
-  if(!ds.length) return '<div class="card">No fixtures loaded yet.'
-    +'<div class="btnrow"><button class="primary" data-act="loadFix">Load fixtures</button></div></div>';
+  const bar='<div class="livebar" id="livebar">'+liveBarInner()+'</div>';
+  if(!ds.length) return bar+'<div class="card">No fixtures yet.'
+    +'<div class="btnrow">'+(compList().length?'<button class="primary" data-act="pull">Pull from Basketball Connect</button>':'')
+    +'<button'+(compList().length?'':' class="primary"')+' data-act="loadFix">Load a fixtures file</button></div></div>';
   const i=ds.indexOf(DAY);
   const dayGames=games().filter(g=>g.date===DAY)
     .sort((a,b)=>String(a.time).localeCompare(String(b.time)));
   const past=DAY<todayStr();
-  let h='<div class="datebar">'
+  let h=bar+'<div class="datebar">'
     +'<button data-act="dPrev" '+(i<=0?'disabled':'')+'>&larr;</button>'
     +'<b>'+esc(niceDate(DAY))+(past?' <span class="tiny">(played)</span>':'')+'</b>'
     +'<button data-act="dNext" '+(i>=ds.length-1?'disabled':'')+'>&rarr;</button></div>';
@@ -563,8 +792,10 @@ function daySheet(){
       +'<div class="time">'+esc(g.time||'—')+'</div>'
       +'<div class="grow"><span class="chip" style="background:'+esc(t.color||'#555')+'">'+esc(t.name)+'</span>'
       +' <span class="tiny">R'+esc(g.round)+' · '+esc(t.division||'')+'</span>'
-      +'<div class="big">vs '+esc(g.opponent||'TBC')+'</div>'
-      +'<div class="tiny">'+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</div></div></div>'
+      +'<div class="big">vs '+esc(g.opponent||'TBC')+resultChip(g)+'</div>'
+      +'<div class="tiny">'+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</div>'
+      +(g.gone?'<div class="flag">Not in Basketball Connect\'s draw any more — moved or cancelled? Your entries for it are kept.</div>':'')
+      +'</div></div>'
       +'<div class="dutyline">\u{1FA91} '+(S.duty[g.bc]?'<b>'+esc(S.duty[g.bc].label)+'</b>'
         +(S.duty[g.bc].locked?' \u{1F512}':''):'no bench duty assigned')
       +(fillinsOf(g).length?' &nbsp;·&nbsp; +'+fillinsOf(g).length+' fill-in'
@@ -651,12 +882,15 @@ function teamView(){
   h+='<h2>Fixtures</h2>';
   const gs=gamesOf(t.key), past=todayStr();
   if(!gs.length) h+='<div class="card">No fixtures loaded for this team.</div>';
-  else{h+='<div class="card"><table><tr><th>R</th><th>Date</th><th>Time</th><th>Opponent</th><th>Where</th></tr>';
+  else{h+='<div class="card"><table><tr><th>R</th><th>Date</th><th>Time</th><th>Opponent</th><th>Result</th><th>Where</th></tr>';
     for(const g of gs){h+='<tr class="tap" data-game="'+esc(g.bc)+'" data-backto="team"'
       +(g.date<past?' style="opacity:.5"':'')+'><td>'+esc(g.round)+'</td>'
-      +'<td>'+esc(niceDate(g.date))+'</td><td>'+esc(g.time||'')+'</td><td>'+esc(g.opponent||'TBC')+'</td>'
+      +'<td>'+esc(niceDate(g.date))+'</td><td>'+esc(g.time||'')+'</td><td>'+esc(g.opponent||'TBC')
+      +(g.gone?'<div class="flag">not in the draw any more</div>':'')+'</td>'
+      +'<td style="white-space:nowrap">'+esc(resultTxt(g))+'</td>'
       +'<td class="tiny">'+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</td></tr>';}
-    h+='</table><div class="tiny" style="margin-top:8px">Tap a game for its announcements.</div></div>';}
+    h+='</table><div class="tiny" style="margin-top:8px">Tap a game for its announcements, box score and opponent.'
+      +(liveGamesOf(t.key)?' Live from Basketball Connect, pulled '+esc(ago(liveTeam(t.key).at))+'.':'')+'</div></div>';}
   return h;
 }
 
@@ -704,6 +938,26 @@ function playerView(){
       +'on the court, so those games read lower — that is what being asked up looks like, not a drop in form.</div></div>';
   }
 
+  // ---- this season, game by game, from the last pull (ADR-015) ----
+  const LT=liveTeam(t.key);
+  if(LT){
+    const ids=idsOf(p),mine=(LT.scoring||[]).filter(r=>r.u&&ids.has(r.u));
+    const byM={};(LT.games||[]).forEach(g=>byM[g.bc]=g);
+    mine.sort((a,b)=>String((byM[a.m]||{}).date||'').localeCompare(String((byM[b.m]||{}).date||'')));
+    const hidN=(LT.scoring||[]).filter(r=>r.hid).length;
+    h+='<h2>This season, game by game</h2><div class="card">';
+    if(!mine.length) h+='<div class="tiny">No games for '+esc(t.name)+' on Basketball Connect yet.</div>';
+    else{let tp=0,tf=0;
+      h+='<table><tr><th>R</th><th>Date</th><th>vs</th><th>Pts</th><th>Fouls</th></tr>';
+      for(const r of mine){const g=byM[r.m]||{};const f=r.pf+r.tf+r.df+r.uf;tp+=r.pts;tf+=f;
+        h+='<tr class="tap" data-game="'+esc(r.m)+'" data-backto="team"><td>'+esc(g.round==null?'':g.round)+'</td><td class="tiny">'+(g.date?esc(niceDate(g.date)):'')+'</td>'
+          +'<td class="tiny">'+esc(g.opponent||'')+'</td><td>'+r.pts+'</td><td>'+f+'</td></tr>'}
+      h+='<tr><td colspan="3"><b>'+mine.length+' game'+(mine.length>1?'s':'')+'</b></td><td><b>'+tp+'</b><div class="tiny">'
+        +(tp/mine.length).toFixed(1)+' a game</div></td><td><b>'+tf+'</b></td></tr></table>'}
+    h+='<div class="tiny" style="margin-top:8px">Basketball Connect, pulled '+esc(ago(LT.at))+'. Points and fouls as the scorer recorded them.'
+      +(hidN?' '+hidN+' game row'+(hidN>1?'s':'')+' on this team '+(hidN>1?'are':'is')+' hidden by Basketball Connect and cannot be matched to a player.':'')+'</div></div>';
+  }
+
   // ADR-013: no ratings section. A pre-season rating is a formation judgement; the card shows
   // what the child has DONE, and the coach's own notes if the pack carries any.
   const c=p.card||{};
@@ -729,9 +983,12 @@ function gameView(){
   let h='<button class="quiet" data-act="gback">&larr; Back</button>'
     +'<div class="card"><div class="row">'
     +'<span class="chip" style="background:'+esc(t.color||'#555')+'">'+esc(t.name)+'</span>'
-    +'<div class="grow"><b>vs '+esc(g.opponent||'TBC')+'</b>'
+    +'<div class="grow"><b>vs '+esc(g.opponent||'TBC')+'</b>'+resultChip(g)
     +'<div class="tiny">R'+esc(g.round)+' · '+esc(niceDate(g.date))+' '+esc(g.time||'')
-    +' · '+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</div></div></div></div>'
+    +' · '+esc(g.venue||'')+(g.court?' · '+esc(g.court):'')+'</div>'
+    +(g.gone?'<div class="flag">Not in Basketball Connect\'s draw any more — moved or cancelled? Your entries for it are kept.</div>':'')
+    +'</div></div></div>'
+    +liveGameSections(g,t)
     +'<h2>Bench duty</h2><div class="card"><div class="row">'
     +'<div class="grow">'+dutySelect(g,g.team)+'</div>'
     +'<button class="lockbtn'+(S.duty[g.bc]&&S.duty[g.bc].locked?' on':'')+'" data-dlock="'+esc(g.bc)+'" '
@@ -856,6 +1113,64 @@ function gameView(){
   return h;
 }
 
+// The game screen's live part (ADR-015): a played game gets its box score and progression; a game still
+// to come gets the opponent read. Nothing here is written to S.
+function liveGameSections(g,t){
+  const LT=g.live?liveTeam(g.team):null; if(!LT) return '';
+  let h='';
+  if(g.status==='played'||g.status==='live'){
+    const rows=(LT.scoring||[]).filter(r=>r.m===String(g.bc)).sort((a,b)=>b.pts-a.pts||String(a.shirt).localeCompare(String(b.shirt),undefined,{numeric:true}));
+    h+='<h2>Box score</h2><div class="card">';
+    if(!rows.length) h+='<div class="tiny">No player statistics for this game on Basketball Connect yet.</div>';
+    else{let sum=0;
+      h+='<table><tr><th>#</th><th>Player</th><th>Pts</th><th class="tiny">2P · 3P · FT</th><th>Fouls</th></tr>';
+      for(const r of rows){sum+=r.pts;const w=r.u?packWho(r.u):null;
+        const nm=r.hid?'<span class="tiny">hidden on Basketball Connect</span>'
+          :(w?esc(w.p.name)+(w.t.key!==g.team?' <span class="tiny">(fill-in, '+esc(w.t.name)+')</span>':'')
+            :esc(r.name||'—')+(r.from?' <span class="tiny">(fill-in)</span>':''));
+        h+='<tr><td>'+esc(r.shirt||'')+'</td><td>'+nm+'</td><td><b>'+r.pts+'</b></td>'
+          +'<td class="tiny">'+r.p2+' · '+r.p3+' · '+r.ft+'</td><td>'+(r.pf+r.tf+r.df+r.uf)+'</td></tr>'}
+      h+='</table>';
+      if(g.own_score!=null&&+g.own_score!==sum) h+='<div class="tiny" style="margin-top:6px">Players\' points add to '+sum
+        +'; the team is recorded with '+esc(g.own_score)+'.</div>';
+    }
+    h+='<div class="tiny" style="margin-top:6px">Made baskets and fouls as the scorer recorded them, pulled '+esc(ago(LT.at))+'.</div></div>';
+    // progression
+    const m=String(g.bc),ev=LIVE.ev&&LIVE.ev[m];
+    h+='<h2>Game progression</h2><div class="card">';
+    if(ev&&ev.pts&&ev.pts.length>1){const f=progressionFacts(g,ev),col=t.color||'#1E3A5F';
+      h+=progressionSvg(g,ev,col)
+        +'<div class="tiny"><span class="key" style="background:'+esc(col)+'"></span>'+esc(t.name)
+        +'<span class="key" style="background:#9AA0A6"></span>'+esc(g.opponent||'Opponent')+'</div>'
+        +'<div class="tiny" style="margin-top:6px">Largest lead: '+esc(t.name)+' '+f.us+', '+esc(g.opponent||'them')+' '+f.them
+        +' · lead changes: '+f.ch+'.'+(f.matches?'':' The scorer\'s log ends at '+esc(f.end)+', not the recorded final.')+'</div>'
+        +'<div class="tiny" style="margin-top:4px">Timed by when the scorer tapped each basket, not the game clock — where the scorer fell behind, baskets bunch together.</div>';
+    }else if(ev) h+='<div class="tiny">Basketball Connect has no scoring log for this game.</div>';
+    else if(EVERR[m]) h+='<div class="tiny">The scoring log could not be pulled ('+esc(EVERR[m])+').</div><div class="btnrow"><button data-evpull="'+esc(m)+'">Try again</button></div>';
+    else{h+='<div class="tiny">Pulling the scoring log…</div>';if(!EVPEND[m])setTimeout(()=>evPull(g),0)}
+    h+='</div>';
+  }
+  if(g.status==='scheduled'&&g.opp_id){
+    const L=LT.ladder||[],o=L.find(x=>x.id===g.opp_id),me=L.find(x=>x.id===LT.id);
+    const h2h=(LT.games||[]).filter(x=>x.opp_id===g.opp_id&&x.status==='played');
+    const oc=LIVE.opp&&LIVE.opp[g.opp_id];
+    h+='<h2>Opponent</h2><div class="card"><b>'+esc(g.opponent)+'</b>';
+    if(o) h+='<div class="tiny">Ladder '+o.rk+' of '+L.length+' · '+o.W+'–'+o.L+(o.D?'–'+o.D:'')+' · '+o.PTS+' pts'
+      +(o.form.length?' · last games, newest first: '+esc(o.form.join(' ')):'')+'</div>'
+      +(me?'<div class="tiny">You: ladder '+me.rk+' · '+me.W+'–'+me.L+(me.D?'–'+me.D:'')+(me.form.length?' · '+esc(me.form.join(' ')):'')+'</div>':'');
+    else h+='<div class="tiny">Not in your current division\'s ladder'+(LT.div_name?' ('+esc(LT.div_name)+')':'')+'.</div>';
+    if(h2h.length) h+='<div class="tiny">Earlier this season: '+h2h.map(x=>'R'+esc(x.round)+' '+esc(resultTxt(x))).join(', ')+'</div>';
+    h+='<div style="margin-top:8px"><b class="tiny" style="color:var(--ink)">Their top scorers</b>';
+    if(oc){h+=oc.top.length?'<table>'+oc.top.map(r=>'<tr><td>#'+esc(r.shirt||'?')+'</td><td>'+(r.hid?'<span class="tiny">name hidden</span>':esc(r.name))
+        +'</td><td>'+(r.g?(r.pts/r.g).toFixed(1):'—')+' a game</td><td class="tiny">'+r.pts+' in '+r.g+'</td></tr>').join('')+'</table>'
+        :'<div class="tiny">No points recorded for them yet.</div>';
+      h+='<div class="tiny">This season, pulled '+esc(ago(oc.at))+'. <button class="quiet" data-opppull="1">Refresh</button></div>'}
+    else h+='<div class="btnrow" style="margin-top:4px"><button data-opppull="1">Get their top scorers</button></div>';
+    h+='</div><div class="tiny" style="margin-top:6px">Ladder as it stands today.</div></div>';
+  }
+  return h;
+}
+
 function tplView(){
   let h='<button class="quiet" data-act="tback">&larr; Data</button>'
     +'<h2>Message templates</h2>'
@@ -879,10 +1194,28 @@ function dataView(){
       +' players · published '+esc(PACK.published||'?'):'not loaded')+'</div>'
     +'<div class="btnrow"><button data-act="loadPack">Load a new pack</button></div>'
     +'<div class="tiny" style="margin-top:10px"><b>Fixtures</b></div>'
-    +'<div class="tiny">'+(FIX?games().length+' games · published '+esc(FIX.published||'?'):'not loaded')+'</div>'
+    +'<div class="tiny">'+(FIX?FIX.games.length+' games in the file · published '+esc(FIX.published||'?')+(LIVE&&LIVE.at?' · used only for teams the pull did not reach':''):'not loaded')+'</div>'
     +'<div class="btnrow"><button data-act="loadFix">Load updated fixtures</button></div>'
     +'<div class="tiny" style="margin-top:10px">Re-loading either file replaces it wholesale and never touches what you have entered.</div>'
     +'</div>'
+    +'<h2>Basketball Connect</h2><div class="card">'
+    +'<b>Competition</b><div class="tiny">The number in the fixture page link (…competitionId=<b>2869</b>…), or paste the whole link. '
+    +(packComps().length?'The club pack says '+esc(packComps().join(', '))+(compText()?'; the one typed here is used instead.':'.'):'The club pack does not carry one.')+'</div>'
+    +'<div class="btnrow"><input id="bcComp" value="'+esc(compText())+'" placeholder="'+esc(packComps().join(', ')||'e.g. 2869')+'" '
+    +'style="flex:1;min-width:120px;font:14px var(--font);border:1px solid var(--line);border-radius:8px;padding:8px 10px">'
+    +'<button class="primary" data-act="compSave">Save and pull</button></div>'
+    +'<div class="tiny" style="margin-top:10px"><b>Last pull</b> '+(PULLING?'running…':(LIVE&&LIVE.at?esc(ago(LIVE.at))+' ('+esc(new Date(LIVE.at).toLocaleString())+')':'never'))+'</div>'
+    +(LIVE&&LIVE.teams?teams().map(t=>{const r=LIVE.teams[t.key];if(!r)return '';
+      const hid=(r.scoring||[]).filter(x=>x.hid).length,me=(r.ladder||[]).find(x=>x.id===r.id);
+      return '<div class="tiny">'+esc(t.name)+': '+(r.err?'<span style="color:var(--bad)">'+esc(r.err)+'</span>'
+        :(r.games.length+' games'+(r.div_name?' · '+esc(r.div_name):'')+(me?' · ladder '+me.rk+' of '+r.ladder.length:'')
+          +' · '+(r.scoring||[]).length+' player-game rows'+(hid?' ('+hid+' hidden by Basketball Connect)':'')
+          +(r.stale?' · <span style="color:var(--bad)">this pull failed ('+esc(r.stale)+'); showing the one from '+esc(ago(r.at))+'</span>':'')))+'</div>'}).join(''):'')
+    +(LIVE&&LIVE.notes&&LIVE.notes.length?'<div class="tiny" style="color:var(--bad)">'+esc(LIVE.notes.join(' '))+'</div>':'')
+    +'<div class="btnrow"><button data-act="pull"'+(compList().length?'':' disabled')+'>Pull now</button></div>'
+    +'<div class="tiny" style="margin-top:6px">The draw, results, ladder, points and fouls are public on Basketball Connect. '
+    +'A pull asks for your teams by competition and team number only — nothing about your players leaves this device. '
+    +'Names, jerseys and contacts still come from the club pack. Pulled '+(HOSTED?'each time the app opens online, and ':'')+'when you press Pull now.</div></div>'
     +'<h2>Messages</h2><div class="card"><b>Message templates</b>'
     +'<div class="tiny">The wording of the three per-game announcements.</div>'
     +'<div class="btnrow"><button data-act="tpl">Edit templates</button></div></div>'
@@ -892,7 +1225,7 @@ function dataView(){
     +'<button data-act="loadBak">Restore a backup</button></div></div>'
     +'<h2>Danger zone</h2><div class="card">'
     +'<div class="btnrow"><button class="danger" data-act="wipe">Empty the app</button></div>'
-    +'<div class="tiny" style="margin-top:6px">Removes the pack, fixtures and all coach state from this device. Save a backup first — this cannot be undone.</div></div>'
+    +'<div class="tiny" style="margin-top:6px">Removes the pack, fixtures, the last pull and all coach state from this device. Save a backup first — this cannot be undone.</div></div>'
     +'<div class="foot">Coach Companion '+APPVER+' · data never leaves this device.<br>'
     +'Contracts: coach.pack v'+CONTRACT_V+' · coach.fixtures v'+CONTRACT_V+'</div>';
   return h;
@@ -1046,10 +1379,18 @@ function wire(){
     const k=b.dataset.tplreset;
     if(S.templates){delete S.templates[k]; if(!Object.keys(S.templates).length)S.templates=null}
     save(); NOTE={cls:'ok',text:'Template reset to the default wording.'}; render()});
+  document.querySelectorAll('[data-opppull]').forEach(b=>b.onclick=()=>{
+    const g=games().find(x=>String(x.bc)===String(GAMEBC)); if(g) oppPull(g)});
+  document.querySelectorAll('[data-evpull]').forEach(b=>b.onclick=()=>{
+    const g=games().find(x=>String(x.bc)===String(b.dataset.evpull)); if(g) evPull(g)});
   document.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>{
     const a=b.dataset.act;
     if(a==='loadPack') pickFile(importPack);
     else if(a==='loadFix') pickFile(importFixtures);
+    else if(a==='pull') livePull(false);
+    else if(a==='compSave'){const v=($('bcComp')||{}).value||'';
+      if(v.trim()&&!compIdsOf(v).length){NOTE={cls:'err',text:'That does not contain a competition number.'};render();return}
+      S.bcComps=v.trim();save();if(document.activeElement)document.activeElement.blur();livePull(false)}
     else if(a==='loadBak') pickFile(importBackup);
     else if(a==='backup') download('coach-companion-backup-'+todayStr()+'.json',backupFile());
     else if(a==='back'){VIEW='teams';render()}
@@ -1061,13 +1402,16 @@ function wire(){
       DAY=ds[a==='dPrev'?i-1:i+1]||DAY;render()}
     else if(a==='wipe'){
       if(confirm('Empty the app? The pack, fixtures and ALL your coach state on this device will be removed. Save a backup first — this cannot be undone.')){
-        localStorage.removeItem(K_PACK);localStorage.removeItem(K_FIX);localStorage.removeItem(K_S);
-        PACK=null;FIX=null;S=freshS();DAY=null;VIEW='day';render()}}
+        localStorage.removeItem(K_PACK);localStorage.removeItem(K_FIX);localStorage.removeItem(K_S);localStorage.removeItem(K_LIVE);
+        PACK=null;FIX=null;LIVE=null;S=freshS();DAY=null;VIEW='day';render()}}
   });
 }
 
 // ---- start -----------------------------------------------------------------------------------
 load(); render();
+// ADR-003/015: the hosted app pulls the draw each time it opens online. The desktop test build pulls only
+// when asked, so a test on file:// is never changed by a live service underneath it.
+if(HOSTED&&navigator.onLine!==false&&PACK&&compList().length) livePull(true);
 // Offline after first load, and ask the browser not to evict this app's storage. Both need a
 // hosted (https) page; on file:// they are skipped and the app runs exactly as before.
 if(HOSTED&&'serviceWorker' in navigator){
