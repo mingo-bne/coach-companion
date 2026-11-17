@@ -561,7 +561,7 @@ function liveGames(fx,tid,key){const out=[];
     const st=m.matchStatus==='ENDED'?'played':(m.matchStatus?'live':'scheduled');
     const g={team:key,round:roundOf((m.round&&m.round.name)||r.name),date:dt.d,time:dt.t,
       opponent:(o&&o.name)||'TBC',venue:(vc.venue&&vc.venue.name)||'',court:vc.name||'',
-      bc:String(m.id),status:st,live:true,home:home,opp_id:home?m.team2Id:m.team1Id,div:m.divisionId||r.divisionId||null,
+      bc:String(m.id),status:st,live:true,home:home,type:m.type||'',opp_id:home?m.team2Id:m.team1Id,div:m.divisionId||r.divisionId||null,
       div_name:(r.division&&r.division.name)||''};
     if(st==='played'){g.result=RES[home?m.team1ResultId:m.team2ResultId]||'';
       g.own_score=home?m.team1Score:m.team2Score;g.opp_score=home?m.team2Score:m.team1Score}
@@ -668,7 +668,10 @@ function evPull(g){const m=String(g.bc);if(EVPEND[m])return;EVPEND[m]=1;delete E
     const pts=(Array.isArray(a)?a:[]).filter(e=>e&&e.eventCategory==='score'&&e.attribute1Key==='team1Score'&&e.attribute2Key==='team2Score')
       .map(e=>({ts:Date.parse(e.eventTimestamp),p:+e.period||0,a:+e.attribute1Value||0,b:+e.attribute2Value||0}))
       .filter(x=>x.ts>0).sort((x,y)=>x.ts-y.ts);
-    LIVE.ev=LIVE.ev||{};LIVE.ev[m]={at:new Date().toISOString(),pts:pts};delete EVPEND[m];save();afterPull()},
+    // team fouls: the player-foul types only (a coach/bench or clock event is not a team foul); side, period, time
+    const f=(Array.isArray(a)?a:[]).filter(e=>e&&e.eventCategory==='stat'&&FOULT[e.type]&&(e.attribute1Key==='team1'||e.attribute1Key==='team2'))
+      .map(e=>({ts:Date.parse(e.eventTimestamp),p:+e.period||0,t:e.attribute1Key==='team1'?1:2})).filter(x=>x.ts>0).sort((x,y)=>x.ts-y.ts);
+    LIVE.ev=LIVE.ev||{};LIVE.ev[m]={v:2,at:new Date().toISOString(),pts:pts,f:f};delete EVPEND[m];save();afterPull()},
     e=>{delete EVPEND[m];EVERR[m]=e.message;afterPull()})}
 // The chart is one inline SVG built from the stored points; own score in the team colour, theirs grey,
 // a dashed line where each period's first basket was logged.
@@ -688,9 +691,20 @@ function progressionRuns(g,ev){const out=[],P=ev.pts;let cur=null,pa=0,pb=0;
 // Chart colours are fixed (Ming, 18 Nov 2026: "citipointe team chart color in navy, opponent team in grey,
 // for all teams") — never the team colour, which can be a split gradient that an SVG line cannot paint.
 const CH_OWN='#1F3A6E', CH_OPP='#9AA0A6';
+// PENALTY (Ming, 18 Nov 2026: "when the 8th foul of each half is committed, which triggers penalty free throws").
+// A team's 8th team foul in a half is marked on the chart. Halves: a two-halves game is P1 | P2 (+ overtime); a
+// four-quarters game is P1–P2 | P3–P4 (+ overtime). Overtime counts with the second half. A game whose format is
+// unknown gets no marker rather than a guessed one.
+const FOULT={PF:1,TF:1,UF:1,DF:1}, FOUL_PEN=8;
+function halfOf(g,p){if(g.type==='TWO_HALVES')return p<=1?1:2;if(g.type==='FOUR_QUARTERS')return p<=2?1:2;return 0}
+function progressionFouls(g,ev){const out=[],n={};
+  (ev.f||[]).forEach(x=>{const h=halfOf(g,x.p);if(!h)return;const own=g.home?x.t===1:x.t===2,k=(own?'o':'t')+h;
+    n[k]=(n[k]||0)+1;if(n[k]===FOUL_PEN)out.push({own,half:h,ts:x.ts,p:x.p})});
+  return out}
 function progressionSvg(g,ev){
   const own=x=>g.home?x.a:x.b,opp=x=>g.home?x.b:x.a,pts=ev.pts;
-  const W=360,L=26,R=6,B=20,PH=162,t0=pts[0].ts,t1=pts[pts.length-1].ts,span=Math.max(1,t1-t0);
+  const fouls=progressionFouls(g,ev),tsAll=pts.map(x=>x.ts).concat(fouls.map(x=>x.ts));
+  const W=360,L=26,R=6,B=20,PH=162,t0=Math.min(...tsAll),t1=Math.max(...tsAll),span=Math.max(1,t1-t0);
   const top=Math.max(4,...pts.map(own),...pts.map(opp));
   const X=ts=>L+(W-L-R)*(ts-t0)/span;
   // Run labels sit in a strip ABOVE the plot, never on the lines: a label within 26 units of the previous one
@@ -709,7 +723,10 @@ function progressionSvg(g,ev){
   let bands='';lab.forEach(({r,x0,x1,cx,row})=>{const c=r.own?CH_OWN:CH_OPP;
     bands+='<rect class="run" x="'+x0.toFixed(1)+'" y="'+T+'" width="'+(x1-x0).toFixed(1)+'" height="'+PH+'" fill="'+esc(c)+'" fill-opacity="0.16"/>'
       +'<text x="'+cx.toFixed(1)+'" y="'+(16+row*11)+'" font-size="10" font-weight="700" text-anchor="middle" fill="'+esc(c)+'">'+r.pts+'–0</text>'});
-  return '<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="Score through the game">'+grid+bands+per
+  let fm='';fouls.forEach(x=>{const c=x.own?CH_OWN:CH_OPP,px=X(x.ts),right=px>W-60;
+    fm+='<line class="foul8" data-own="'+(x.own?1:0)+'" x1="'+px.toFixed(1)+'" x2="'+px.toFixed(1)+'" y1="'+T+'" y2="'+(T+PH)+'" stroke="'+c+'" stroke-width="1.5"/>'
+      +'<text x="'+(right?px-3:px+3).toFixed(1)+'" y="'+(T+PH-4)+'" font-size="9" font-weight="700" text-anchor="'+(right?'end':'start')+'" fill="'+c+'">8th foul</text>'});
+  return '<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="Score through the game">'+grid+bands+per+fm
     +'<path d="'+step(opp)+'" fill="none" stroke="'+CH_OPP+'" stroke-width="2"/>'
     +'<path d="'+step(own)+'" fill="none" stroke="'+CH_OWN+'" stroke-width="2.5"/></svg>'}
 // Facts read off the same points: largest lead each way, lead changes, and whether the log reaches the final.
@@ -1160,7 +1177,7 @@ function liveGameSections(g,t){
     }
     h+='<div class="tiny" style="margin-top:6px">Made baskets and fouls as the scorer recorded them, pulled '+esc(ago(LT.at))+'.</div></div>';
     // progression
-    const m=String(g.bc),ev=LIVE.ev&&LIVE.ev[m];
+    const m=String(g.bc),ev=LIVE.ev&&LIVE.ev[m]&&LIVE.ev[m].v===2?LIVE.ev[m]:null;  // a log cached before fouls were kept is fetched again
     h+='<h2>Game progression</h2><div class="card">';
     if(ev&&ev.pts&&ev.pts.length>1){const f=progressionFacts(g,ev);
       h+=progressionSvg(g,ev)
@@ -1168,11 +1185,8 @@ function liveGameSections(g,t){
         +'<span class="key" style="background:'+CH_OPP+'"></span>'+esc(g.opponent||'Opponent')+'</div>'
         +'<div class="tiny" style="margin-top:6px">Largest lead: '+esc(t.name)+' '+f.us+', '+esc(g.opponent||'them')+' '+f.them
         +' · lead changes: '+f.ch+'.'+(f.matches?'':' The scorer\'s log ends at '+esc(f.end)+', not the recorded final.')+'</div>'
-        +(()=>{const rs=progressionRuns(g,ev);
-          return '<div class="tiny" style="margin-top:4px"><b style="color:var(--ink)">Runs of '+RUN_MIN+'+ unanswered scores</b> (shaded): '
-            +(rs.length?rs.map(r=>esc(r.own?t.name:(g.opponent||'Opponent'))+' '+r.pts+'–0 in '+(r.p0===r.p1?'P'+r.p0:'P'+r.p0+'→P'+r.p1)+' ('+r.n+' scores)').join(' · '):'none')
-            +'. Each basket or free throw the scorer logged counts as one score.</div>'})()
-        +'<div class="tiny" style="margin-top:4px">Timed by when the scorer tapped each basket, not the game clock — where the scorer fell behind, baskets bunch together.</div>';
+
+;
     }else if(ev) h+='<div class="tiny">Basketball Connect has no scoring log for this game.</div>';
     else if(EVERR[m]) h+='<div class="tiny">The scoring log could not be pulled ('+esc(EVERR[m])+').</div><div class="btnrow"><button data-evpull="'+esc(m)+'">Try again</button></div>';
     else{h+='<div class="tiny">Pulling the scoring log…</div>';if(!EVPEND[m])setTimeout(()=>evPull(g),0)}
